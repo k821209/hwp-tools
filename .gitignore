@@ -1,0 +1,7 @@
+__pycache__/
+*.pyc
+# never commit documents — they may carry unpublished content
+*.hwp
+*.hwpx
+*.pdf
+.DS_Store
