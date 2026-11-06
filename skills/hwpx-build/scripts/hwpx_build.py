@@ -380,15 +380,57 @@ class HwpxBuilder:
         self.para(marker + text, size=size, face=face, left_mm=4, first_mm=-3)
         return self
 
-    def code(self, lines, size=10.5, face="굴림체", fill_color="#F2F2F2"):
+    def code(self, lines, size=10.5, face="굴림체", fill_color="#F2F2F2",
+             lang=None, theme=None):
+        """A fenced code block, one paragraph per line.
+
+        `lang` is "python" | "r" | "shell" | "plain", or None to guess from a
+        first-line comment naming it. Pass "plain" for a data dump — colouring
+        a VCF header as shell turns the header row into a comment.
+
+        Emphasis is NOT parsed here: `**` and `*` in code are syntax.
+        """
+        try:
+            from codelex import guess_lang, lex, THEME
+        except ImportError:       # colouring is optional, the block is not
+            guess_lang = lex = THEME = None
+
         bf = self.borderfill(face_color=fill_color)
         pp = self.parapr(align="LEFT", left_mm=3, line_spacing=130, fill=bf)
-        for ln in lines:
-            # Code is literal: ** and * in it are syntax, not emphasis.
-            cp = self.charpr(size=size, face=face)
-            self._body.append(self._p(
-                pp, '<hp:run charPrIDRef="%s"><hp:t>%s</hp:t></hp:run>'
-                    % (cp, _esc(ln) or "")))
+
+        if lex is None or lang == "plain":
+            for ln in lines:
+                cp = self.charpr(size=size, face=face)
+                self._body.append(self._p(
+                    pp, '<hp:run charPrIDRef="%s"><hp:t>%s</hp:t></hp:run>'
+                        % (cp, _esc(ln))))
+            return self
+
+        colors = dict(THEME, **(theme or {}))
+        lang = lang or guess_lang(lines)
+
+        # Lex the whole block, not line by line: a triple-quoted string or a
+        # continued statement spans lines, and a per-line lexer would reopen
+        # the string on every one of them.
+        rows: list[list[tuple[str, str]]] = [[]]
+        for text, kind in lex("\n".join(lines), lang):
+            parts = text.split("\n")
+            for n, part in enumerate(parts):
+                if n:
+                    rows.append([])
+                if part:
+                    rows[-1].append((part, kind))
+
+        for row in rows:
+            runs = "".join(
+                '<hp:run charPrIDRef="%s"><hp:t>%s</hp:t></hp:run>'
+                % (self.charpr(size=size, face=face,
+                               color=colors.get(kind, colors["text"])), _esc(txt))
+                for txt, kind in row)
+            if not runs:   # a blank line still needs a run to hold the shading
+                runs = ('<hp:run charPrIDRef="%s"><hp:t></hp:t></hp:run>'
+                        % self.charpr(size=size, face=face))
+            self._body.append(self._p(pp, runs))
         return self
 
     def quote(self, text, size=11.5, face=None, fill_color="#FFF6E5"):

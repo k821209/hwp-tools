@@ -76,7 +76,7 @@ all silently revert. `parapr()` replaces every occurrence, not the first.
 | `bullet(text)` | a `·` paragraph with a hanging indent |
 | `table(rows, widths_mm=…)` | `hp:tbl` sized to `text_width`, header row shaded |
 | `image(path, width_mm=…)` | inline (`treatAsChar="1"`) PNG, aspect kept, added to `BinData/` and the `content.hpf` manifest |
-| `code(lines, face=…)` | shaded, indented, fixed-width lines, emphasis NOT parsed |
+| `code(lines, lang=…)` | shaded, indented, fixed-width lines, syntax-coloured; emphasis NOT parsed |
 | `quote(text)` | shaded, indented pull-quote |
 
 Styling arguments are plain units: `size` in points, `*_mm` in millimetres
@@ -103,6 +103,39 @@ body and tables, so a diff against the source shows anything dropped.
 **Passing all of it does not mean the file opens.** LibreOffice cannot load
 `.hwpx`, so nothing here can render the result. `verify()` returns
 `opens_in_hangul: None` on purpose. A person opens it in Hangul and says.
+
+## Colouring code
+
+`code()` colours its block through `scripts/codelex.py` — a small regex lexer
+for the three languages a technical text actually prints, Python, R and shell.
+Standard library only, so a document generator does not pull in Pygments to put
+four colours on a listing.
+
+```python
+b.code(lines)                     # language guessed from the first line
+b.code(lines, lang="r")           # or named
+b.code(lines, lang="plain")       # a data dump: no colouring
+b.code(lines, theme={"comment": "#777777"})
+```
+
+Two things make it safe to run over a listing you care about:
+
+**`lex()` returns every character exactly once.** Concatenating the pieces
+gives the source back, so highlighting cannot drop a backslash or eat an
+indent. The module's `__main__` asserts the round trip; so should anything
+built on it.
+
+**A block whose first line starts with `#` but does not name a language is
+treated as plain.** The convention is a first-line comment — `# python`,
+`# R` — and anything else beginning with `#` is a data dump. A VCF block
+lexed as shell turns its `#CHROM …` header into a comment and each data row
+into a command, which looks deliberate and is wrong.
+
+For shell, a program name is recognised at the start of a line or after a
+pipe or separator — not merely at the start of an unmatched span, which is
+also where an *argument* lands once the option before it has been tokenised.
+`ref.fa` in `-R '…' ref.fa` is an argument, and an earlier version painted it
+as a command.
 
 ## Decoration
 
