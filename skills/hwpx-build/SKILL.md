@@ -138,13 +138,26 @@ reader sees is `next_pt × 100 − bottom`. That is why the default 142 against 
 6 pt space-after leaves 1.6 mm and reads as the box sitting on the first body
 line. Fix it from the outer side.
 
+## Confirmed in Hangul
+
+Opened in Hangul 2024 by a person — which is the only way any of this gets
+confirmed, since nothing here can render a `.hwpx`. A four-chapter textbook,
+each chapter ~30 pages with tables, figures, fenced code and a reference list:
+
+- the file opens, with no document-security or repair dialog
+- tables render (once they are inside an `hp:run` — rule 4)
+- inline images render at the requested width
+- paragraph shading, the chapter band and the section rule render
+- **leading spaces in `code()` are preserved**, so the U+00A0 workaround that
+  was being held in reserve is not needed
+
 ## Known unverified
 
-- **Leading spaces in `code()`.** They are written literally into `<hp:t>` and
-  survive a re-read, but whether Hangul preserves or collapses them on open has
-  not been checked. If it collapses them, substitute U+00A0 for the indent.
 - **Page headers and footers.** `page()` sets the margins reserved for them;
   writing their content needs `hp:masterPage`, which this does not do.
+- **Everything outside that document's shape.** Long tables broken across
+  pages, nested tables, footnotes, equations and multi-section documents have
+  not been exercised.
 
 ## Example
 
