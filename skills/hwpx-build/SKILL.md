@@ -26,7 +26,7 @@ b.save("out.hwpx")
 HwpxBuilder.verify("out.hwpx", expect_images=1, expect_tables=1)
 ```
 
-## The four rules
+## The five rules
 
 **1. Never write `header.xml` from scratch. Start from a template.**
 A header carries the font table, border fills, character and paragraph
@@ -53,7 +53,15 @@ without any error to tell you. Pick from the template, or pick a template that
 carries the face you want. `굴림체` is the fixed-width face present in
 essentially every Hangul install.
 
-**4. `hh:paraPr` holds its margins TWICE.**
+**4. A table or a picture goes inside an `hp:run`, never straight into `hp:p`.**
+`hp:tbl` and `hp:pic` are control objects and live where a run of text would.
+Place one as a direct child of the paragraph and everything still agrees with
+you: the XML parses, `verify()` counts the table, `hwpx_text.py` prints its
+rows. Hangul opens the document and the table is not there — no warning, no
+repair dialog, just a missing table. `verify()` now reports
+`controls_outside_run`, because this is invisible from every other angle.
+
+**5. `hh:paraPr` holds its margins TWICE.**
 Inside `<hp:switch>` there is an `<hp:case>` and an `<hp:default>`, each with a
 full `<hh:margin>` and `<hh:lineSpacing>`. Set only the first and Hangul reads
 the other: the indent, the hanging indent for a reference list, the line spacing
@@ -83,9 +91,11 @@ Images must be **PNG** — the size is read from the IHDR so Pillow is not neede
 `HwpxBuilder.verify()` checks: zip integrity, all three XML parts parse,
 `itemCnt` against the real block count for charPr/paraPr/borderFill, duplicate
 ids, duplicate zip entries, image count, table count, that no `linesegarray`
-was written, and that every `binaryItemIDRef` in the body resolves to an
-`opf:item` in the manifest — a reference that does not resolve is a figure that
-silently vanishes on open.
+was written, that every `binaryItemIDRef` in the body resolves to an `opf:item`
+in the manifest, that every rootfile `META-INF/container.xml` declares is
+actually in the archive, and that no `hp:tbl`/`hp:pic` sits outside an
+`hp:run`. The last three are each a way to lose content with every XML part
+still parsing cleanly.
 
 Cross-check the text too: `../hwpx-edit/scripts/hwpx_text.py out.hwpx` renders
 body and tables, so a diff against the source shows anything dropped.
@@ -93,6 +103,23 @@ body and tables, so a diff against the source shows anything dropped.
 **Passing all of it does not mean the file opens.** LibreOffice cannot load
 `.hwpx`, so nothing here can render the result. `verify()` returns
 `opens_in_hangul: None` on purpose. A person opens it in Hangul and says.
+
+## Decoration
+
+Paragraph shading and paragraph borders are one `borderFill`, referenced from
+`hh:paraPr`'s `hh:border`. So a chapter title set white on a solid band, and a
+section title on a wash with a rule under it, are both just a `fill=`:
+
+```python
+b.para("제3장 …", size=17, bold=True, color="#FFFFFF", left_mm=3,
+       fill=b.borderfill(face_color="#1F3A5F"))
+b.para("3.1 …", size=14, bold=True, color="#1F3A5F", left_mm=2,
+       fill=b.borderfill(face_color="#E8EDF3", edges=("bottom",),
+                         width="0.4 mm", color="#1F3A5F"))
+```
+
+`parapr(border_edges=…)` merges edges into the fill for you; passing `fill=`
+directly is clearer when you want both.
 
 ## Known unverified
 

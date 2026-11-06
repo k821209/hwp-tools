@@ -67,7 +67,7 @@ font table, border fills and style tables, and the builder clones the character
 and paragraph properties it needs out of it. Only `Contents/section0.xml` is
 written fresh.
 
-Read [`skills/hwpx-build/SKILL.md`](skills/hwpx-build/SKILL.md) — four rules,
+Read [`skills/hwpx-build/SKILL.md`](skills/hwpx-build/SKILL.md) — five rules,
 and a note on what has *not* been verified.
 [`examples/markdown_chapter.py`](skills/hwpx-build/examples/markdown_chapter.py)
 converts a markdown chapter, figures and all.

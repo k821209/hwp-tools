@@ -108,10 +108,27 @@ One element carries both the four edges and the fill:
 `faceColor="none"` is no fill. A table needs at least two: one with all four
 edges `SOLID` for the grid, one with a `faceColor` for the header row.
 
+## Control objects live in a run
+
+`hp:tbl` and `hp:pic` are not paragraph-level elements. They sit where a run of
+text would sit:
+
+```xml
+<hp:p …>
+  <hp:run charPrIDRef="12"><hp:t>표 3-1. 설명</hp:t></hp:run>
+  <hp:run charPrIDRef="13"><hp:tbl …>…</hp:tbl></hp:run>
+</hp:p>
+```
+
+Put one directly under `hp:p` and nothing complains — the XML is well-formed,
+the element is present, and a reader walking the tree for `hp:tbl` finds it and
+prints its rows. Hangul drops it silently on open. It was a missing table in a
+document whose every check passed that turned this up.
+
 ## Tables
 
-`hp:tbl` is placed inside a run, like a picture, and with `treatAsChar="1"` it
-flows as a character in the paragraph — far less to get right than anchoring it.
+With `treatAsChar="1"` the table flows as a character in its paragraph — far
+less to get right than anchoring it.
 
 ```xml
 <hp:tbl rowCnt="3" colCnt="4" cellSpacing="0" borderFillIDRef="…" …>

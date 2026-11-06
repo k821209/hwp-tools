@@ -38,7 +38,10 @@ from hwpx_build import HwpxBuilder  # noqa: E402
 
 BODY = "함초롬바탕"
 MONO = "굴림체"          # the usual fixed-width face present in Hangul installs
-INK = "#1F3A5F"
+INK = "#1F3A5F"         # chapter/section titles
+BAND = "#1F3A5F"        # chapter title band
+TINT = "#E8EDF3"        # section title wash
+PAPER = "#FFFFFF"
 
 SPEC = {"top": 15, "bottom": 15, "left": 25, "right": 25, "header": 15, "footer": 15}
 
@@ -63,11 +66,18 @@ def convert(md_path, out_path, title=None, template=None):
         m = re.match(r"^(#{1,3})\s+(.*)", line)
         if m:
             lvl, text = len(m.group(1)), m.group(2)
-            b.para(text, size={1: 17.0, 2: 14.0, 3: 13.0}[lvl], bold=True,
-                   color=INK, face=body_face, align="LEFT",
-                   prev_pt={1: 6, 2: 16, 3: 10}[lvl],
-                   next_pt={1: 14, 2: 6, 3: 3}[lvl],
-                   border_edges=("bottom",) if lvl == 2 else ())
+            if lvl == 1:                       # chapter — white on a solid band
+                b.para(text, size=17.0, bold=True, color=PAPER, face=body_face,
+                       align="LEFT", left_mm=3, prev_pt=6, next_pt=14,
+                       fill=b.borderfill(face_color=BAND))
+            elif lvl == 2:                     # section — wash plus a rule under
+                b.para(text, size=14.0, bold=True, color=INK, face=body_face,
+                       align="LEFT", left_mm=2, prev_pt=16, next_pt=6,
+                       fill=b.borderfill(face_color=TINT, edges=("bottom",),
+                                         width="0.4 mm", color=INK))
+            else:
+                b.para(text, size=13.0, bold=True, color=INK, face=body_face,
+                       align="LEFT", prev_pt=10, next_pt=3)
             i += 1
             continue
 
@@ -128,15 +138,17 @@ def convert(md_path, out_path, title=None, template=None):
             if text == "참고문헌":
                 in_refs = True
                 b.para(text, size=14.0, bold=True, color=INK, face=body_face,
-                       align="LEFT", prev_pt=20, next_pt=6,
-                       border_edges=("bottom",))
+                       align="LEFT", left_mm=2, prev_pt=20, next_pt=6,
+                       fill=b.borderfill(face_color=TINT, edges=("bottom",),
+                                         width="0.4 mm", color=INK))
             elif re.match(r"^(표|그림)\s*\d", text):
                 b.para(text, size=11.5, bold=True, face=body_face,
                        align="LEFT", prev_pt=8, next_pt=3)
             else:
                 b.para(text, size=12.5, bold=True, color=INK, face=body_face,
                        align="LEFT", left_mm=2, prev_pt=11, next_pt=3,
-                       border_edges=("left",))
+                       fill=b.borderfill(edges=("left",), width="0.6 mm",
+                                         color=INK))
             i += 1
             continue
 

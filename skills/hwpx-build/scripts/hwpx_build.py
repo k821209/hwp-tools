@@ -112,6 +112,7 @@ class HwpxBuilder:
 
         self._new = {"charPr": [], "paraPr": [], "borderFill": []}
         self._cache: dict = {}
+        self._fill_color: dict = {}   # borderFill id → faceColor, to merge fill+edges
         self._body: list[str] = []
         self._images: list[tuple[str, Path]] = []
         self._instid = 1000000
@@ -236,7 +237,16 @@ class HwpxBuilder:
                  r=int(round(right_mm * MM)), p=int(round(prev_pt * 100)),
                  n=int(round(next_pt * 100)), ls=int(line_spacing))
 
-        bf = fill if fill is not None else self._base_borderfill
+        # Shading and paragraph borders are the SAME borderFill. Taking `fill`
+        # and ignoring `border_edges` is how a heading's rule silently vanishes
+        # while the call that asked for it still reads correctly.
+        if border_edges and fill is None:
+            bf = self.borderfill(edges=border_edges)
+        elif border_edges:
+            bf = self.borderfill(face_color=self._fill_color.get(fill),
+                                 edges=border_edges)
+        else:
+            bf = fill if fill is not None else self._base_borderfill
         border = ('<hh:border borderFillIDRef="{bf}" offsetLeft="283" offsetRight="283" '
                   'offsetTop="142" offsetBottom="142" connect="0" ignoreMargin="0"/>'
                   ).format(bf=bf)
@@ -279,6 +289,7 @@ class HwpxBuilder:
 
         bid = self._clone("borderFill", self._base_borderfill, mutate)
         self._cache[key] = bid
+        self._fill_color[bid] = face_color
         return bid
 
     # ----------------------------------------------------------------- layout
@@ -434,8 +445,12 @@ class HwpxBuilder:
         ).format(i=self._instid, rc=len(rows), cc=ncol, bf=grid,
                  w=self.text_width, rows="".join(trs))
 
+        # A table is a control object: it lives inside an hp:run, exactly like
+        # a picture. Placed as a direct child of hp:p every XML check still
+        # passes, hwpx_text still reads it back — and Hangul drops it on open.
         pp = self.parapr(align="LEFT", next_pt=6)
-        self._body.append(self._p(pp, tbl))
+        cp = self.charpr(size=size, face=face)
+        self._body.append(self._p(pp, f'<hp:run charPrIDRef="{cp}">{tbl}</hp:run>'))
         return self
 
     def image(self, path, width_mm=120, align="CENTER", prev_pt=8):
@@ -633,6 +648,15 @@ class HwpxBuilder:
 
         r["images"] = len(re.findall(r"<hc:img\b", section))
         r["tables"] = len(re.findall(r"<hp:tbl\b", section))
+        # A control object placed as a direct child of hp:p instead of inside an
+        # hp:run passes every other check here, reads back from the XML, and is
+        # dropped by Hangul on open. Count the ones sitting loose.
+        r["controls_outside_run"] = {
+            "tbl": len(re.findall(r"<hp:tbl\b", section))
+                   - len(re.findall(r"<hp:run[^>]*><hp:tbl\b", section)),
+            "pic": len(re.findall(r"<hp:pic\b", section))
+                   - len(re.findall(r"<hp:run[^>]*><hp:pic\b", section)),
+        }
         # A body written here carries no line cache; Hangul builds it on open.
         r["linesegarray"] = len(re.findall(r"<hp:linesegarray>", section))
         refs = set(re.findall(r'binaryItemIDRef="([^"]+)"', section))
