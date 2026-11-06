@@ -92,6 +92,12 @@ same order, which is what Hangul writes.
 `borderFillIDRef` on a `charPr` is character shading; on a `paraPr`'s
 `hh:border` it is paragraph shading and borders.
 
+`hh:border`'s `offsetLeft/Right/Top/Bottom` are the box's **inner** margin —
+how far the shading and the rules sit outside the text. The **outer** margin,
+the gap to the neighbouring paragraph, is `hc:prev` / `hc:next` in `hh:margin`.
+Reaching for the offsets to push a heading away from the body is the natural
+mistake and makes the box fatter instead.
+
 ## `hh:borderFill`
 
 One element carries both the four edges and the fill:

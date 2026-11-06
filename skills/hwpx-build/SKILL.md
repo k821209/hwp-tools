@@ -121,13 +121,22 @@ b.para("3.1 …", size=14, bold=True, color="#1F3A5F", left_mm=2,
 `parapr(border_edges=…)` merges edges into the fill for you; passing `fill=`
 directly is clearer when you want both.
 
-**A shaded box is bigger than its text, and the difference comes out of the
-space around the paragraph.** `border_offsets=(left, right, top, bottom)` in
-HWPUNIT is how far the box extends past the text; the gap a reader actually
-sees below a heading is `next_pt × 100 − bottom offset`. Leave the default
-142 against a 6 pt space-after and 1.6 mm is left, which reads as the box
-sitting on the first line of body text. Give the space after enough to pay for
-the offset and still leave a margin.
+**Two margins, and they are not interchangeable.**
+
+| | what it is | set with |
+|---|---|---|
+| inner | text → box edge, i.e. the box's padding | `border_offsets=(l, r, t, b)`, HWPUNIT |
+| outer | box edge → the paragraph next door | `prev_pt` / `next_pt` |
+
+Raising the inner margin to push a heading off the body text does the opposite
+of what you want: the box grows to meet the text instead of backing away from
+it. Keep the inside tight — 85 HWPUNIT (0.3 mm) under a wash, ~150 under a
+solid band so the white type is not cramped — and buy the separation outside.
+
+The two do interact: the box extends `bottom` past the text, so the gap a
+reader sees is `next_pt × 100 − bottom`. That is why the default 142 against a
+6 pt space-after leaves 1.6 mm and reads as the box sitting on the first body
+line. Fix it from the outer side.
 
 ## Known unverified
 

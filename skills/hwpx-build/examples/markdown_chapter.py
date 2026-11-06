@@ -66,20 +66,21 @@ def convert(md_path, out_path, title=None, template=None):
         m = re.match(r"^(#{1,3})\s+(.*)", line)
         if m:
             lvl, text = len(m.group(1)), m.group(2)
-            # A shaded box extends past its text by border_offsets, and that
-            # comes out of the space around the paragraph. Space after has to
-            # beat the bottom offset or the box closes on the first body line.
+            # border_offsets is the box's INNER margin — raising it only makes
+            # the box fatter. The gap to the body is the OUTER margin,
+            # prev_pt/next_pt. Keep the inside tight and buy the separation
+            # outside.
             if lvl == 1:                       # chapter — white on a solid band
                 b.para(text, size=17.0, bold=True, color=PAPER, face=body_face,
-                       align="LEFT", left_mm=3, prev_pt=10, next_pt=18,
+                       align="LEFT", left_mm=3, prev_pt=12, next_pt=20,
                        fill=b.borderfill(face_color=BAND),
-                       border_offsets=(340, 340, 260, 260))
+                       border_offsets=(340, 340, 150, 150))
             elif lvl == 2:                     # section — wash plus a rule under
                 b.para(text, size=14.0, bold=True, color=INK, face=body_face,
-                       align="LEFT", left_mm=2, prev_pt=20, next_pt=13,
+                       align="LEFT", left_mm=2, prev_pt=22, next_pt=16,
                        fill=b.borderfill(face_color=TINT, edges=("bottom",),
                                          width="0.4 mm", color=INK),
-                       border_offsets=(283, 283, 170, 170))
+                       border_offsets=(283, 283, 85, 85))
             else:
                 b.para(text, size=13.0, bold=True, color=INK, face=body_face,
                        align="LEFT", prev_pt=10, next_pt=3)
@@ -143,10 +144,10 @@ def convert(md_path, out_path, title=None, template=None):
             if text == "참고문헌":
                 in_refs = True
                 b.para(text, size=14.0, bold=True, color=INK, face=body_face,
-                       align="LEFT", left_mm=2, prev_pt=22, next_pt=13,
+                       align="LEFT", left_mm=2, prev_pt=24, next_pt=16,
                        fill=b.borderfill(face_color=TINT, edges=("bottom",),
                                          width="0.4 mm", color=INK),
-                       border_offsets=(283, 283, 170, 170))
+                       border_offsets=(283, 283, 85, 85))
             elif re.match(r"^(표|그림)\s*\d", text):
                 b.para(text, size=11.5, bold=True, face=body_face,
                        align="LEFT", prev_pt=8, next_pt=3)
