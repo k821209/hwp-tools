@@ -43,7 +43,36 @@ the structures behind them: paragraphs and runs, the `hp:linesegarray` line
 cache, character properties and how Hangul merges them on save, table rows, and
 how a memo is actually stored (`hp:fieldBegin type="MEMO"`, not `hp:memo`).
 
-Also:
+### `skills/hwpx-build/`
+
+Write a new `.hwpx`: headings, paragraphs, tables, images, code blocks,
+pull-quotes, reference lists.
+
+```python
+from hwpx_build import HwpxBuilder
+
+b = HwpxBuilder("template.hwpx")          # a real Hangul file, for its header
+b.page(margins_mm={"top": 15, "bottom": 15, "left": 25, "right": 25})
+b.heading(1, "제3장 진핵생물 데이터 분석")
+b.para("본문입니다. **굵게** 와 *기울임* 이 삽니다.", face="함초롬바탕")
+b.table([["항목", "원핵생물", "진핵생물"], ["인트론", "없음", "있음"]])
+b.image("fig3-1.png", width_mm=120)
+b.save("out.hwpx")
+HwpxBuilder.verify("out.hwpx", expect_images=1, expect_tables=1)
+```
+
+It does **not** write `header.xml` from scratch — that is where files that pass
+every check and still refuse to open come from. A template `.hwpx` supplies the
+font table, border fills and style tables, and the builder clones the character
+and paragraph properties it needs out of it. Only `Contents/section0.xml` is
+written fresh.
+
+Read [`skills/hwpx-build/SKILL.md`](skills/hwpx-build/SKILL.md) — four rules,
+and a note on what has *not* been verified.
+[`examples/markdown_chapter.py`](skills/hwpx-build/examples/markdown_chapter.py)
+converts a markdown chapter, figures and all.
+
+Also, under `hwpx-edit/`:
 - `scripts/hwpx_text.py` — `.hwpx` → body and table text, for locating anchors
   and as a diff baseline. `python3 hwpx_text.py file.hwpx`
 - `scripts/hwp5_text.py` — `.hwp` 5.x → text (OLE + raw deflate + record scan)
