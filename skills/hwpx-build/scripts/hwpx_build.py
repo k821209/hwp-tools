@@ -213,14 +213,19 @@ class HwpxBuilder:
 
     def parapr(self, align="JUSTIFY", left_mm=0.0, right_mm=0.0, first_mm=0.0,
                prev_pt=0.0, next_pt=0.0, line_spacing=160, fill=None,
-               border_edges=()) -> str:
+               border_edges=(), border_offsets=(283, 283, 142, 142)) -> str:
         """Paragraph properties id.
 
         `first_mm` negative gives a hanging indent. `fill` shades the paragraph,
         `border_edges` is any of ("left","right","top","bottom").
+
+        `border_offsets` is (left, right, top, bottom) in HWPUNIT: how far the
+        shaded box extends BEYOND the text. It eats into `prev_pt`/`next_pt`,
+        so a heading on a band needs the space after it to exceed the bottom
+        offset or the box closes on the first body line.
         """
         key = ("p", align, left_mm, right_mm, first_mm, prev_pt, next_pt,
-               line_spacing, fill, tuple(border_edges))
+               line_spacing, fill, tuple(border_edges), tuple(border_offsets))
         if key in self._cache:
             return self._cache[key]
 
@@ -247,9 +252,10 @@ class HwpxBuilder:
                                  edges=border_edges)
         else:
             bf = fill if fill is not None else self._base_borderfill
-        border = ('<hh:border borderFillIDRef="{bf}" offsetLeft="283" offsetRight="283" '
-                  'offsetTop="142" offsetBottom="142" connect="0" ignoreMargin="0"/>'
-                  ).format(bf=bf)
+        ol, orr, ot, ob = border_offsets
+        border = ('<hh:border borderFillIDRef="{bf}" offsetLeft="{l}" offsetRight="{r}" '
+                  'offsetTop="{t}" offsetBottom="{b}" connect="0" ignoreMargin="0"/>'
+                  ).format(bf=bf, l=int(ol), r=int(orr), t=int(ot), b=int(ob))
 
         def mutate(tag, inner):
             inner = re.sub(r"<hh:align\b[^>]*/>",
@@ -354,10 +360,12 @@ class HwpxBuilder:
 
     def para(self, text="", size=13.0, bold=False, color="#000000", face=None,
              align="JUSTIFY", left_mm=0.0, first_mm=0.0, prev_pt=0.0, next_pt=0.0,
-             line_spacing=160, fill=None, border_edges=()):
+             line_spacing=160, fill=None, border_edges=(),
+             border_offsets=(283, 283, 142, 142)):
         pp = self.parapr(align=align, left_mm=left_mm, first_mm=first_mm,
                          prev_pt=prev_pt, next_pt=next_pt, line_spacing=line_spacing,
-                         fill=fill, border_edges=border_edges)
+                         fill=fill, border_edges=border_edges,
+                         border_offsets=border_offsets)
         self._body.append(self._p(pp, self._runs(text, size, bold, color, face)))
         return self
 

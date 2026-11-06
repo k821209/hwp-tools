@@ -121,6 +121,14 @@ b.para("3.1 …", size=14, bold=True, color="#1F3A5F", left_mm=2,
 `parapr(border_edges=…)` merges edges into the fill for you; passing `fill=`
 directly is clearer when you want both.
 
+**A shaded box is bigger than its text, and the difference comes out of the
+space around the paragraph.** `border_offsets=(left, right, top, bottom)` in
+HWPUNIT is how far the box extends past the text; the gap a reader actually
+sees below a heading is `next_pt × 100 − bottom offset`. Leave the default
+142 against a 6 pt space-after and 1.6 mm is left, which reads as the box
+sitting on the first line of body text. Give the space after enough to pay for
+the offset and still leave a margin.
+
 ## Known unverified
 
 - **Leading spaces in `code()`.** They are written literally into `<hp:t>` and
