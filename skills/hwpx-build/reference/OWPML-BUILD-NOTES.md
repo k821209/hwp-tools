@@ -34,9 +34,21 @@ run of the first paragraph of the section:
 
 ```xml
 <hs:sec …>
-  <hp:p …><hp:run charPrIDRef="…"><hp:secPr …>…</hp:secPr></hp:run>
+  <hp:p …><hp:run charPrIDRef="…"><hp:secPr …>…</hp:secPr>
+       <hp:ctrl><hp:colPr id="" type="NEWSPAPER" layout="LEFT" colCount="1"
+                          sameSz="1" sameGap="0"/></hp:ctrl></hp:run>
      <hp:run …><hp:t>first line of text</hp:t></hp:run></hp:p>
 ```
+
+**The `colPr` is not optional.** Every Hangul-made file carries it right after
+`secPr`, in the same run. Without it the file still opens and every structural
+check passes, but Hangul throws the page setup away and lays the body out with
+its own defaults — 30 mm sides, 20 mm top plus a 15 mm header. Measured on a
+probe page set to 20 mm sides: the left margin came out at 30.2 mm, the body
+148.5 mm instead of 170, and a 168 mm table Hangul had made itself, copied in
+verbatim, overran the right margin by 21 mm. With the `colPr` back: 20.4 mm,
+and the table inside. Until 2026-11-14 this builder wrote `secPr` alone, so
+every margin passed to `page()` before then was silently dropped.
 
 So a document cannot be empty: there has to be a paragraph for the section
 properties to ride in. `_section_xml()` injects it into whatever the first block

@@ -118,6 +118,16 @@ class HwpxBuilder:
         if not m:
             raise HwpxBuildError("template has no hp:secPr to borrow")
         self.secpr = m.group(0)
+        # Hangul writes the column definition right after secPr, in the same
+        # run, and reads the two together. Borrowing secPr without it, the page
+        # setup was ignored on open: Hangul laid out the body with its own
+        # defaults (30 mm sides, 20 + 15 mm top), so every table sized to
+        # text_width overran the right margin and every margin passed to
+        # page() was silently dropped.
+        c = re.match(r"\s*(<hp:ctrl>\s*<hp:colPr\b[^>]*/>\s*</hp:ctrl>)", tsec[m.end():])
+        self.colpr = c.group(1) if c else (
+            '<hp:ctrl><hp:colPr id="" type="NEWSPAPER" layout="LEFT" colCount="1" '
+            'sameSz="1" sameGap="0"/></hp:ctrl>')
 
         self._base_charpr = self._first_id("charPr")
         self._base_parapr = self._first_id("paraPr")
@@ -748,7 +758,8 @@ class HwpxBuilder:
         # secPr belongs to the FIRST paragraph's first run, not to hs:sec.
         first = self._body[0]
         cp = self.charpr()
-        first = first.replace(">", f'><hp:run charPrIDRef="{cp}">{self.secpr}</hp:run>', 1)
+        first = first.replace(
+            ">", f'><hp:run charPrIDRef="{cp}">{self.secpr}{self.colpr}</hp:run>', 1)
         body = first + "".join(self._body[1:])
         if self._fn_refs:
             body = self._fill_footnotes(body)
@@ -900,6 +911,10 @@ class HwpxBuilder:
             "pic": len(re.findall(r"<hp:pic\b", section))
                    - len(re.findall(r"<hp:run[^>]*><hp:pic\b", section)),
         }
+        # secPr without the colPr Hangul writes beside it: the file opens, and
+        # the page size and margins are replaced by Hangul's defaults.
+        sp = re.search(r"</hp:secPr>\s*(<hp:ctrl>\s*<hp:colPr\b)?", section)
+        r["secpr_with_colpr"] = None if not sp else bool(sp.group(1))
         # A body written here carries no line cache; Hangul builds it on open.
         r["linesegarray"] = len(re.findall(r"<hp:linesegarray>", section))
         refs = set(re.findall(r'binaryItemIDRef="([^"]+)"', section))

@@ -26,7 +26,7 @@ b.save("out.hwpx")
 HwpxBuilder.verify("out.hwpx", expect_images=1, expect_tables=1)
 ```
 
-## The five rules
+## The six rules
 
 **1. Never write `header.xml` from scratch. Start from a template.**
 A header carries the font table, border fills, character and paragraph
@@ -66,6 +66,15 @@ Inside `<hp:switch>` there is an `<hp:case>` and an `<hp:default>`, each with a
 full `<hh:margin>` and `<hh:lineSpacing>`. Set only the first and Hangul reads
 the other: the indent, the hanging indent for a reference list, the line spacing
 all silently revert. `parapr()` replaces every occurrence, not the first.
+
+**6. `hp:secPr` travels with its `hp:colPr`.**
+The page size and margins ride in the first paragraph's first run, and Hangul
+writes the column definition (`<hp:ctrl><hp:colPr …/></hp:ctrl>`) right after
+them in the same run. Borrow the one without the other and the file opens, every
+check passes, and the page setup is replaced by Hangul's defaults: 30 mm sides,
+20 + 15 mm top. Tables sized to `text_width` then overrun the right margin by
+the difference — which is how this was found, reported as a table-margin bug
+(#8). The builder borrows both; `verify()` reports `secpr_with_colpr`.
 
 ## What it writes
 
@@ -273,6 +282,11 @@ And a check document (2026-11-14), opened by a person in Hangul:
 - **table cell padding** — text sits clear of the cell rule once the table's
   `inMargin` is 510/141 (it was 0, and every cell, at `hasMargin="0"`, follows
   the table's value rather than its own `cellMargin`)
+- **page margins from `page()`** — on a probe page set to 20 mm sides and a
+  25 mm first line, Hangul laid out 20.4 mm and 25.4 mm, once `colPr` rode
+  with `secPr` (rule 6). Before that every document here was laid out at
+  Hangul's defaults whatever `page()` said; the items above were judged on
+  their own look, which the margins do not change.
 - from `markdown_chapter.py`: a hard-wrapped source paragraph comes out as one
   paragraph, a `1. ` item's continuation line lines up under the hanging
   indent, and a bold-led caption is justified
