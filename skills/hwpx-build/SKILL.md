@@ -109,6 +109,24 @@ still parsing cleanly.
 Cross-check the text too: `../hwpx-edit/scripts/hwpx_text.py out.hwpx` renders
 body and tables, so a diff against the source shows anything dropped.
 
+**Text and structure cannot show formatting.** A caption that falls into the
+body branch comes out at 13 pt instead of 10 with every character in place, so
+the text diff passes and so does `verify()`. Read the formatting back with
+`--with-style`:
+
+```
+$ hwpx_text.py out.hwpx --with-style
+[13.0pt 함초롬바탕] 엑셀 시트를 회람하는 방식을 쓰지 않고 …
+[10.0pt 함초롬바탕 굵게 + 10.0pt 함초롬바탕] 그림 1. 검수 화면 — …
+| [10.5pt 함초롬바탕 굵게] 지표 | [10.5pt 함초롬바탕] 0.638 |
+  ↳ 각주 [9.5pt 함초롬바탕] Cohen's κ 는 …
+```
+
+Each paragraph and table cell is prefixed with the size, face and weight of the
+charPr its runs reference, and each footnote gets its own line. It shows and
+does not judge — what the right size is belongs to the document — so diff it
+against the previous build, or read the lines you meant to change.
+
 **Passing all of it does not mean the file opens.** LibreOffice cannot load
 `.hwpx`, so nothing here can render the result. `verify()` returns
 `opens_in_hangul: None` on purpose. A person opens it in Hangul and says.
@@ -194,6 +212,7 @@ in the text of a footnote — notes do not nest.
 
 `hwpx_text.py` prints a note's text inline, right after its mark, so a diff
 against the markdown source shows it in the paragraph rather than at the end.
+With `--with-style` each note goes on its own `↳ 각주` line instead.
 
 ## Decoration
 

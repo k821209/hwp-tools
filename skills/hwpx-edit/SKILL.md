@@ -102,6 +102,10 @@ opens".
 
 - `scripts/hwpx_text.py` — `.hwpx` → body and table text (tables as pipe rows).
   For locating anchors and as a diff baseline. Also runnable: `hwpx_text.py f.hwpx`.
+  `--with-style` prefixes each paragraph and cell with its size, face and
+  weight (`[13.0pt 함초롬바탕]`) and puts footnotes on their own lines, so an
+  edit that changed formatting but not text shows up in the diff. Without the
+  flag the output is byte-for-byte what it was.
 - `scripts/hwp5_text.py` — `.hwp` 5.x → text (olefile + zlib, `HWPTAG_PARA_TEXT`).
   Needs `olefile`; the rest of this skill needs nothing.
 - `reference/OWPML-NOTES.md` — the structures these rules come from.
