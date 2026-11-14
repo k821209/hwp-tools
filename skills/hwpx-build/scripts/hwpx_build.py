@@ -633,17 +633,35 @@ class HwpxBuilder:
         return self
 
     def table(self, rows, widths_mm=None, header=True, size=10.5, face=None,
-              head_fill="#EAEAEA"):
-        """A grid table. `rows` is a list of lists of strings."""
+              head_fill="#EAEAEA", align="LEFT"):
+        """A grid table. `rows` is a list of lists of strings.
+
+        Without `widths_mm` the columns split `text_width` evenly. With it, the
+        widths are used as given: a sum narrower than the body is a narrower
+        table (place it with `align="CENTER"`), and a sum wider than the body
+        raises — a table past the right margin passes every structural check
+        and shows only when someone opens the file.
+        """
         if not rows:
             raise HwpxBuildError("table() needs at least one row")
         ncol = max(len(r) for r in rows)
         rows = [list(r) + [""] * (ncol - len(r)) for r in rows]
         if widths_mm:
+            if len(widths_mm) != ncol:
+                raise HwpxBuildError(
+                    f"widths_mm has {len(widths_mm)} widths for {ncol} columns")
             widths = [int(round(w * MM)) for w in widths_mm]
+            over = sum(widths) - self.text_width
+            if over > 0.5 * MM:          # tolerate rounding, not a real overrun
+                raise HwpxBuildError(
+                    "widths_mm add up to %.1f mm, %.1f mm wider than the body "
+                    "(text_width %.1f mm)" % (sum(widths) / MM, over / MM,
+                                              self.text_width / MM))
+            if over > 0:
+                widths[-1] -= over
         else:
             widths = [self.text_width // ncol] * ncol
-        widths[-1] += self.text_width - sum(widths)
+            widths[-1] += self.text_width - sum(widths)
 
         grid = self.borderfill(edges=("left", "right", "top", "bottom"))
         head = self.borderfill(face_color=head_fill,
@@ -690,12 +708,12 @@ class HwpxBuilder:
             '<hp:inMargin left="510" right="510" top="141" bottom="141"/>'
             "{rows}</hp:tbl>"
         ).format(i=self._instid, rc=len(rows), cc=ncol, bf=grid,
-                 w=self.text_width, rows="".join(trs))
+                 w=sum(widths), rows="".join(trs))
 
         # A table is a control object: it lives inside an hp:run, exactly like
         # a picture. Placed as a direct child of hp:p every XML check still
         # passes, hwpx_text still reads it back — and Hangul drops it on open.
-        pp = self.parapr(align="LEFT", next_pt=6)
+        pp = self.parapr(align=align, next_pt=6)
         cp = self.charpr(size=size, face=face)
         self._body.append(self._p(pp, f'<hp:run charPrIDRef="{cp}">{tbl}</hp:run>'))
         return self

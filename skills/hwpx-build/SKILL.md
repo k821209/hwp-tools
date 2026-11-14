@@ -83,7 +83,7 @@ the difference — which is how this was found, reported as a table-margin bug
 | `para(text, …)` | `hp:p` with one `hp:run` per `**bold**` / `*italic*` / `` `code` `` span |
 | `heading(level, text)` | a sized, bold paragraph (1→17 pt, 2→14, 3→13) |
 | `bullet(text)` | a `·` paragraph with a hanging indent |
-| `table(rows, widths_mm=…)` | `hp:tbl` sized to `text_width`, header row shaded |
+| `table(rows, widths_mm=…, align=…)` | `hp:tbl`, header row shaded; full `text_width` split evenly, or exactly `widths_mm` (wider than the body raises) |
 | `image(path, width_mm=…)` | inline (`treatAsChar="1"`) PNG, aspect kept, added to `BinData/` and the `content.hpf` manifest |
 | `code(lines, lang=…)` | shaded, indented, fixed-width lines, syntax-coloured; emphasis NOT parsed |
 | `quote(text)` | shaded, indented pull-quote |
@@ -286,7 +286,8 @@ And a check document (2026-11-14), opened by a person in Hangul:
   25 mm first line, Hangul laid out 20.4 mm and 25.4 mm, once `colPr` rode
   with `secPr` (rule 6). Before that every document here was laid out at
   Hangul's defaults whatever `page()` said; the items above were judged on
-  their own look, which the margins do not change.
+  their own look, which the margins do not change. The same fix made Hangul's
+  table properties show the cell widths, which had read 0.
 - from `markdown_chapter.py`: a hard-wrapped source paragraph comes out as one
   paragraph, a `1. ` item's continuation line lines up under the hanging
   indent, and a bold-led caption is justified
@@ -295,6 +296,9 @@ And a check document (2026-11-14), opened by a person in Hangul:
 
 - **Page headers and footers.** `page()` sets the margins reserved for them;
   writing their content needs `hp:masterPage`, which this does not do.
+- **`table(align="CENTER")`** for a table narrower than the body. It is the
+  host paragraph's alignment, which is how Hangul places any inline object,
+  but no one has looked at one yet.
 - **A footnote longer than the space left on its page**, and several notes
   competing for one page foot. Only two short notes have been seen.
 - **Everything outside that document's shape.** Long tables broken across
