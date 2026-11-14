@@ -646,7 +646,10 @@ class HwpxBuilder:
             'holdAnchorAndSO="0" vertRelTo="PARA" horzRelTo="COLUMN" vertAlign="TOP" '
             'horzAlign="LEFT" vertOffset="0" horzOffset="0"/>'
             '<hp:outMargin left="0" right="0" top="0" bottom="283"/>'
-            '<hp:inMargin left="0" right="0" top="0" bottom="0"/>'
+            # Each hp:tc says hasMargin="0", which means "use the table's
+            # inMargin", not its own cellMargin. With this at 0 the text sat
+            # against the cell rule. 510/141 is what Hangul gives a new table.
+            '<hp:inMargin left="510" right="510" top="141" bottom="141"/>'
             "{rows}</hp:tbl>"
         ).format(i=self._instid, rc=len(rows), cc=ncol, bf=grid,
                  w=self.text_width, rows="".join(trs))

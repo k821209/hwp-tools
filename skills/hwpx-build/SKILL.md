@@ -247,6 +247,12 @@ And a check document (2026-11-14), opened by a person in Hangul:
   cells; `a*b*c` keeps its asterisks
 - **`ignore_margin=True`** — the chapter band and the section wash sit apart
   from the body text below them instead of growing into the space after
+- **table cell padding** — text sits clear of the cell rule once the table's
+  `inMargin` is 510/141 (it was 0, and every cell, at `hasMargin="0"`, follows
+  the table's value rather than its own `cellMargin`)
+- from `markdown_chapter.py`: a hard-wrapped source paragraph comes out as one
+  paragraph, a `1. ` item's continuation line lines up under the hanging
+  indent, and a bold-led caption is justified
 
 ## Known unverified
 
