@@ -5,3 +5,10 @@ __pycache__/
 *.hwpx
 *.pdf
 .DS_Store
+
+# scivo: holds this project's API key in clear text
+.mcp.json
+.mcp.json.bak
+
+# scivo: local model endpoints may carry a token
+.scivo/
