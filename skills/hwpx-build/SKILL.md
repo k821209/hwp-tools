@@ -199,6 +199,16 @@ headings, tables, figures with captions, fenced code, pull-quotes and a
 hanging-indent reference list. Reads the same markdown subset a python-docx
 builder does, so one source yields both formats.
 
+Two things about that subset you would otherwise learn from the output:
+
+- **A paragraph ends at a blank line**, not at a line break. Markdown wrapped
+  at 80 columns gives one `hp:p` per paragraph; writing one per source line
+  puts paragraph spacing between every line and justifies each line on its
+  own, and the body comes out scattered. List items and `>` quotes take their
+  continuation lines the same way.
+- **`1. ` numbered items are read; nested lists are not.** An indented item
+  under another one starts its own item at the outer level.
+
 ```
 python3 markdown_chapter.py chapter.md out.hwpx "제3장 …" template.hwpx
 ```

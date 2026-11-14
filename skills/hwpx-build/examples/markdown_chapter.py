@@ -18,10 +18,16 @@ reads, so one source produces both formats:
     | a | b |            → table (a --- separator row is required)
     ![](path.png)        → image; a following line starting 그림/표 is its caption
     ```                  → code block (fenced)
-    > text               → pull-quote
+    > text               → pull-quote; consecutive > lines are one quote
     - item               → bullet
+    1. item              → numbered item, hanging indent
     *제목*               → sub-heading inside the reference list
-    everything else      → body paragraph, **bold** and *italic* preserved
+    everything else      → body paragraph, **bold**, *italic* and `code` kept
+
+A paragraph ends at a blank line or at the start of another block, as in
+markdown itself: a source wrapped at 80 columns gives one paragraph per
+paragraph, not one per line. A list item takes its continuation lines the
+same way, indented or not. Nested lists are not read.
 
 Reference lists set in 10.5 pt with a hanging indent start at a line reading
 exactly `**참고문헌**`.
@@ -45,6 +51,46 @@ PAPER = "#FFFFFF"
 
 SPEC = {"top": 15, "bottom": 15, "left": 25, "right": 25, "header": 15, "footer": 15}
 
+HEADING = re.compile(r"^(#{1,3})\s+(.*)")
+IMAGE = re.compile(r"^!\[.*?\]\((.+?)\)")
+NUMBERED = re.compile(r"^(\d+)\.\s+(.*)")
+CAPTION = re.compile(r"^(\*\*)?(그림|표)\s*\d")
+
+
+def is_table_head(lines, i):
+    """A `|` line followed by a separator row (`|---|:--:|`).
+
+    The separator must actually hold a `-`: an empty line is a subset of
+    "-: " too, and testing only the subset turned a stray `|` line followed
+    by a blank line into a one-row table.
+    """
+    if not lines[i].strip().startswith("|") or i + 1 >= len(lines):
+        return False
+    sep = lines[i + 1].strip()
+    return "-" in sep and "|" in sep and set(sep) <= set("|-: ")
+
+
+def starts_block(lines, i):
+    """True if line i opens a block, so it cannot continue the one before."""
+    s = lines[i].strip()
+    return bool(not s or HEADING.match(s) or IMAGE.match(s) or s.startswith(
+        ("```", ">", "- ")) or NUMBERED.match(s) or is_table_head(lines, i))
+
+
+def gather(lines, i, first):
+    """`first` plus every following line up to a blank line or a new block.
+
+    Returns (joined text, index of the next unread line). Markdown joins a
+    single line break into a space, so a hard-wrapped paragraph comes back as
+    one string.
+    """
+    buf = [first.strip()]
+    i += 1
+    while i < len(lines) and not starts_block(lines, i):
+        buf.append(lines[i].strip())
+        i += 1
+    return " ".join(x for x in buf if x), i
+
 
 def convert(md_path, out_path, title=None, template=None):
     md = Path(md_path).read_text(encoding="utf-8")
@@ -63,7 +109,7 @@ def convert(md_path, out_path, title=None, template=None):
             i += 1
             continue
 
-        m = re.match(r"^(#{1,3})\s+(.*)", line)
+        m = HEADING.match(line)
         if m:
             lvl, text = len(m.group(1)), m.group(2)
             # border_offsets is the box's INNER margin — raising it only makes
@@ -87,7 +133,7 @@ def convert(md_path, out_path, title=None, template=None):
             i += 1
             continue
 
-        m = re.match(r"^!\[.*?\]\((.+?)\)", line)
+        m = IMAGE.match(line)
         if m:
             p = Path(m.group(1))
             # A markdown file may hold paths relative to itself or to the
@@ -97,10 +143,15 @@ def convert(md_path, out_path, title=None, template=None):
                 p = base / p if (base / p).exists() else p
             b.image(p, width_mm=120)
             i += 1
-            if i < len(lines) and re.match(r"^(그림|표)\s*\d", lines[i].strip()):
-                b.para(lines[i].strip(), size=10.0, face=body_face,
-                       align="CENTER", next_pt=10)
-                i += 1
+            c = CAPTION.match(lines[i].strip()) if i < len(lines) else None
+            if c:
+                text, i = gather(lines, i, lines[i])
+                # A bare "그림 3-1. 제목" is a label and is centred. One that
+                # opens in bold — "**그림 1. 제목.** and then a legend" — is a
+                # legend, and a centred legend of several lines is unreadable.
+                b.para(text, size=10.0, face=body_face,
+                       align="JUSTIFY" if c.group(1) else "CENTER",
+                       line_spacing=135 if c.group(1) else 160, next_pt=10)
             continue
 
         if line.startswith("```"):
@@ -113,8 +164,7 @@ def convert(md_path, out_path, title=None, template=None):
             b.code(buf, face=mono_face)
             continue
 
-        if line.startswith("|") and i + 1 < len(lines) and \
-                set(lines[i + 1].replace("|", "").strip()) <= set("-: "):
+        if is_table_head(lines, i):
             rows = []
             while i < len(lines) and lines[i].strip().startswith("|"):
                 cells = [c.strip() for c in lines[i].strip().strip("|").split("|")]
@@ -125,20 +175,30 @@ def convert(md_path, out_path, title=None, template=None):
             continue
 
         if line.startswith(">"):
-            b.quote(line.lstrip("> ").strip(), face=body_face)
-            i += 1
+            buf = []
+            while i < len(lines) and lines[i].strip().startswith(">"):
+                buf.append(lines[i].strip()[1:].strip())
+                i += 1
+            b.quote(" ".join(x for x in buf if x), face=body_face)
             continue
 
         if line.startswith("- "):
+            text, i = gather(lines, i, line[2:])
             if in_refs:
-                b.para(line[2:], size=10.5, face=body_face, align="LEFT",
+                b.para(text, size=10.5, face=body_face, align="LEFT",
                        left_mm=7, first_mm=-5, line_spacing=115, next_pt=2)
             else:
-                b.bullet(line[2:], face=body_face)
-            i += 1
+                b.bullet(text, face=body_face)
             continue
 
-        m = re.fullmatch(r"\*\*(.+?)\*\*", line)
+        m = NUMBERED.match(line)
+        if m:
+            text, i = gather(lines, i, m.group(2))
+            b.para(f"{m.group(1)}. {text}", face=body_face, left_mm=7,
+                   first_mm=-7, next_pt=4)
+            continue
+
+        m = re.fullmatch(r"\*\*([^*]+)\*\*", line)
         if m:
             text = m.group(1)
             if text == "참고문헌":
@@ -159,15 +219,17 @@ def convert(md_path, out_path, title=None, template=None):
             i += 1
             continue
 
-        m = re.fullmatch(r"\*(.+?)\*", line)
+        m = re.fullmatch(r"\*([^*]+)\*", line)
         if m and in_refs:
             b.para(m.group(1), size=11.0, bold=True, color=INK, face=body_face,
                    align="LEFT", left_mm=2, prev_pt=8, next_pt=3)
             i += 1
             continue
 
-        b.para(line, face=body_face, next_pt=4)
-        i += 1
+        # Body text. The first line is taken unconditionally: it reached here
+        # because no block claimed it, and refusing it too would never advance.
+        text, i = gather(lines, i, line)
+        b.para(text, face=body_face, next_pt=4)
 
     b.save(out_path)
     return b
