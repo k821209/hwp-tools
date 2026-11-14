@@ -15,6 +15,7 @@ reads, so one source produces both formats:
     # 장 제목            → heading 1
     ## 절 제목           → heading 2
     **소제목**           → a bold line on its own
+    **표 N. 제목**(주)   → a caption on its own line; the bold need only open it
     | a | b |            → table (a --- separator row is required)
     ![](path.png)        → image; the next line starting 그림/표 is its caption,
                            and a 그림 line after a blank line too
@@ -234,6 +235,18 @@ def convert(md_path, out_path, title=None, template=None):
                    first_mm=-7, next_pt=4)
             continue
 
+        # A caption standing on its own line — usually above a table — whose
+        # bold opens the line but need not close it: "**표 3-3. 제목**(행: A)."
+        # Testing for a line that is bold end to end missed that form and sent
+        # it to the body at 13 pt. The markup is left in, so the bold part
+        # stays bold and the note after it does not.
+        c = CAPTION.match(line)
+        if c and c.group(1):
+            text, i = gather(lines, i, line)
+            b.para(text, size=11.5, face=body_face, align="LEFT",
+                   prev_pt=8, next_pt=3)
+            continue
+
         m = re.fullmatch(r"\*\*([^*]+)\*\*", line)
         if m:
             text = m.group(1)
@@ -244,9 +257,6 @@ def convert(md_path, out_path, title=None, template=None):
                        fill=b.borderfill(face_color=TINT, edges=("bottom",),
                                          width="0.4 mm", color=INK),
                        border_offsets=(283, 283, 85, 85))
-            elif re.match(r"^(표|그림)\s*\d", text):
-                b.para(text, size=11.5, bold=True, face=body_face,
-                       align="LEFT", prev_pt=8, next_pt=3)
             else:
                 b.para(text, size=12.5, bold=True, color=INK, face=body_face,
                        align="LEFT", left_mm=2, prev_pt=11, next_pt=3,
