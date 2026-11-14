@@ -16,7 +16,8 @@ reads, so one source produces both formats:
     ## 절 제목           → heading 2
     **소제목**           → a bold line on its own
     | a | b |            → table (a --- separator row is required)
-    ![](path.png)        → image; a following line starting 그림/표 is its caption
+    ![](path.png)        → image; the next line starting 그림/표 is its caption,
+                           and a 그림 line after a blank line too
     ```                  → code block (fenced)
     > text               → pull-quote; consecutive > lines are one quote
     - item               → bullet
@@ -170,9 +171,17 @@ def convert(md_path, out_path, title=None, template=None):
                 p = base / p if (base / p).exists() else p
             b.image(p, width_mm=120)
             i += 1
-            c = CAPTION.match(lines[i].strip()) if i < len(lines) else None
+            # Markdown usually puts a blank line between a figure and its
+            # caption. Look past blank lines — but after a gap take only a
+            # 그림 caption: a "표 N." there is the caption ABOVE the next table.
+            j = i
+            while j < len(lines) and not lines[j].strip():
+                j += 1
+            c = CAPTION.match(lines[j].strip()) if j < len(lines) else None
+            if c and j > i and c.group(2) != "그림":
+                c = None
             if c:
-                text, i = gather(lines, i, lines[i])
+                text, i = gather(lines, j, lines[j])
                 # A bare "그림 3-1. 제목" is a label and is centred. One that
                 # opens in bold — "**그림 1. 제목.** and then a legend" — is a
                 # legend, and a centred legend of several lines is unreadable.

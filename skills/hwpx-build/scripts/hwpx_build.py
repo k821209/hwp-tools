@@ -346,11 +346,39 @@ class HwpxBuilder:
         self._page = (width_mm, height_mm, m)
         return self
 
+    def _page_geom(self) -> dict:
+        """Page size and margins in HWPUNIT, read from the secPr in use.
+
+        Read from the XML rather than from what page() was given: without a
+        page() call the geometry is the template's, and assuming A4 with
+        30 mm sides sized every table wrongly in a template that was not.
+        """
+        pp = re.search(r"<hp:pagePr\b[^>]*>", self.secpr).group(0)
+        mg = re.search(r"<hp:margin\b[^>]*/>", self.secpr).group(0)
+        g = {k: int(v) for k, v in re.findall(r'\b(width|height)="(\d+)"', pp)}
+        g.update({k: int(v) for k, v in re.findall(
+            r'\b(header|footer|left|right|top|bottom)="(\d+)"', mg)})
+        return g
+
     @property
     def text_width(self) -> int:
-        """Usable text width in HWPUNIT, for sizing tables and images."""
-        w, _, m = getattr(self, "_page", (210, 297, {"left": 30, "right": 30}))
-        return int(round((w - m["left"] - m["right"]) * MM))
+        """Usable text width in HWPUNIT: page width minus left and right."""
+        g = self._page_geom()
+        return g["width"] - g["left"] - g["right"]
+
+    @property
+    def text_height(self) -> int:
+        """Usable text height in HWPUNIT, for sizing a tall figure or table.
+
+        Page height minus top, bottom, header AND footer. Hangul lays out the
+        header and footer areas inside the top and bottom margins' far side,
+        so subtracting only top and bottom overstates the body by their sum —
+        30 mm at the usual 15/15, which is enough to push a tall figure onto
+        the next page.
+        """
+        g = self._page_geom()
+        return (g["height"] - g["top"] - g["bottom"]
+                - g["header"] - g["footer"])
 
     # ------------------------------------------------------------------ runs
 

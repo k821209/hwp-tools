@@ -82,8 +82,12 @@ all silently revert. `parapr()` replaces every occurrence, not the first.
 
 Styling arguments are plain units: `size` in points, `*_mm` in millimetres
 (`first_mm` negative = hanging indent), `prev_pt`/`next_pt` space around the
-paragraph, `line_spacing` a percentage. `text_width` gives the usable width in
-HWPUNIT for sizing tables yourself.
+paragraph, `line_spacing` a percentage. `text_width` and `text_height` give
+the usable body area in HWPUNIT (divide by `MM` for millimetres), read from the
+page settings actually in the file — the template's, if `page()` was never
+called. `text_height` subtracts the header and footer areas as well as the top
+and bottom margins: Hangul's body is what is left after all four, and leaving
+out the header and footer overstates it by 30 mm at 15/15.
 
 `**bold**`, `*italic*`, `` `code` `` and `[^id]` are read in `para`, `heading`,
 `bullet`, `quote` and every table cell — everything except `code()`, where
