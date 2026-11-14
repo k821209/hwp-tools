@@ -36,7 +36,7 @@ import xml.etree.ElementTree as ET
 import zipfile
 from pathlib import Path
 
-__all__ = ["HwpxBuilder", "HwpxBuildError"]
+__all__ = ["HwpxBuilder", "HwpxBuildError", "mono_cols"]
 
 SECTION = "Contents/section0.xml"
 HEADER = "Contents/header.xml"
@@ -83,6 +83,19 @@ _SECTION_HEAD = (
 
 class HwpxBuildError(RuntimeError):
     pass
+
+
+def mono_cols(text: str) -> int:
+    """Columns `text` takes in a code() block set in 굴림체: ASCII 1, else 2.
+
+    Measured in Hangul (#9): Hangul syllables, hanja, box drawing (├ ─ │),
+    arrows (→ ↓), circled digits (①), and the Latin-1 symbols · × ° plus ‘
+    all took exactly two columns. Unicode calls most of those "ambiguous"
+    width, and a Western monospace face draws them one column wide — so a
+    width table from that world misaligns here. Characters outside that set
+    (accented Latin, emoji, half-width kana) have not been measured.
+    """
+    return sum(1 if ord(c) < 128 else 2 for c in text)
 
 
 def _esc(s: str) -> str:
@@ -243,7 +256,7 @@ class HwpxBuilder:
     def parapr(self, align="JUSTIFY", left_mm=0.0, right_mm=0.0, first_mm=0.0,
                prev_pt=0.0, next_pt=0.0, line_spacing=160, fill=None,
                border_edges=(), border_offsets=(283, 283, 142, 142),
-               ignore_margin=True) -> str:
+               ignore_margin=True, auto_spacing=None) -> str:
         """Paragraph properties id.
 
         `first_mm` negative gives a hanging indent. `fill` shades the paragraph,
@@ -252,6 +265,10 @@ class HwpxBuilder:
         `border_offsets` is (left, right, top, bottom) in HWPUNIT: how far the
         shaded box extends beyond the text.
 
+        `auto_spacing` sets Hangul's extra space between Korean and Latin /
+        digits (문단 모양 → 한글과 영어·숫자 간격 자동 조절). None keeps the
+        template's; False turns it off, which a fixed-width block needs.
+
         `ignore_margin` keeps the box off the paragraph's own space before and
         after. With it False the shading covers that space too, so raising
         `next_pt` to push a heading away from the body just makes the box
@@ -259,7 +276,7 @@ class HwpxBuilder:
         """
         key = ("p", align, left_mm, right_mm, first_mm, prev_pt, next_pt,
                line_spacing, fill, tuple(border_edges), tuple(border_offsets),
-               ignore_margin)
+               ignore_margin, auto_spacing)
         if key in self._cache:
             return self._cache[key]
 
@@ -301,6 +318,10 @@ class HwpxBuilder:
             inner = re.sub(r"<hh:margin>.*?</hh:margin>"
                            r'<hh:lineSpacing\b[^>]*/>', margin, inner, flags=re.S)
             inner = re.sub(r"<hh:border\b[^>]*/>", border, inner, count=1)
+            if auto_spacing is not None:
+                v = "1" if auto_spacing else "0"
+                inner = re.sub(r"<hh:autoSpacing\b[^>]*/>",
+                               f'<hh:autoSpacing eAsianEng="{v}" eAsianNum="{v}"/>', inner)
             return tag, inner
 
         pid = self._clone("paraPr", self._base_parapr, mutate)
@@ -590,7 +611,11 @@ class HwpxBuilder:
             guess_lang = lex = THEME = None
 
         bf = self.borderfill(face_color=fill_color)
-        pp = self.parapr(align="LEFT", left_mm=3, line_spacing=130, fill=bf)
+        # Auto spacing off whatever the template says: with it on, Hangul adds
+        # space at every Korean/Latin boundary and a fixed-width block stops
+        # lining up even in a fixed-width face.
+        pp = self.parapr(align="LEFT", left_mm=3, line_spacing=130, fill=bf,
+                         auto_spacing=False)
 
         if lex is None or lang == "plain":
             for ln in lines:

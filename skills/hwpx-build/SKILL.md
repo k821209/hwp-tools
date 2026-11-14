@@ -173,6 +173,34 @@ also where an *argument* lands once the option before it has been tokenised.
 `ref.fa` in `-R '…' ref.fa` is an argument, and an earlier version painted it
 as a command.
 
+## Lining up columns in a code block
+
+A tree or a small table drawn in a `code()` block lines up when every
+character is counted at its real width. In 굴림체 that is simple, and it was
+measured in Hangul rather than assumed: **ASCII takes one column, and every
+other character tested takes two** — Hangul syllables, hanja, box drawing
+(`├ ─ │ └`), arrows (`→ ↓`), circled digits (`①`), and even the Latin-1
+symbols `· × °` and the quote `‘`. `mono_cols(text)` counts that way:
+
+```python
+from hwpx_build import mono_cols
+w = max(mono_cols(t) for t in rows) + 2
+lines = [t + " " * (w - mono_cols(t)) + "# note" for t in rows]
+```
+
+Two things this does not cover. Unicode marks most of those symbols as
+"ambiguous" width and a Western monospace face draws them one column wide, so
+the same source exported elsewhere (a `.docx` in Noto Sans Mono CJK, say) can
+misalign — count for the face the document is set in. And characters outside
+the tested set — accented Latin, emoji, half-width kana — are unmeasured; if a
+block depends on them, indent instead of aligning: put the note on the next
+line, so no column has to agree.
+
+`code()` also turns off Hangul's automatic space between Korean and Latin or
+digits (`hh:autoSpacing`) for its paragraphs, whatever the template says. With
+it on, every boundary between the two scripts gains a little space and a
+fixed-width face stops lining up.
+
 ## Inline code
 
 A backtick span in running text — a column name, a file, a label value — is set
@@ -282,6 +310,9 @@ And a check document (2026-11-14), opened by a person in Hangul:
 - **table cell padding** — text sits clear of the cell rule once the table's
   `inMargin` is 510/141 (it was 0, and every cell, at `hasMargin="0"`, follows
   the table's value rather than its own `cellMargin`)
+- **column widths in `code()`** — in 굴림체, a probe of twelve non-ASCII
+  characters (가 漢 ├ ─ │ → ↓ ① · × ° ‘) each took exactly two columns, and
+  the tree from #9 padded with `mono_cols` lined up
 - **page margins from `page()`** — on a probe page set to 20 mm sides and a
   25 mm first line, Hangul laid out 20.4 mm and 25.4 mm, once `colPr` rode
   with `secPr` (rule 6). Before that every document here was laid out at
