@@ -288,6 +288,9 @@ And a check document (2026-11-14), opened by a person in Hangul:
   Hangul's defaults whatever `page()` said; the items above were judged on
   their own look, which the margins do not change. The same fix made Hangul's
   table properties show the cell widths, which had read 0.
+- **`table(widths_mm=…, align=…)`** — `[40, 60]` in a 160 mm body drew a
+  100 mm table, left or centred as asked, and `[30, 50, 80]` drew those three
+  column widths
 - from `markdown_chapter.py`: a hard-wrapped source paragraph comes out as one
   paragraph, a `1. ` item's continuation line lines up under the hanging
   indent, and a bold-led caption is justified
@@ -296,9 +299,6 @@ And a check document (2026-11-14), opened by a person in Hangul:
 
 - **Page headers and footers.** `page()` sets the margins reserved for them;
   writing their content needs `hp:masterPage`, which this does not do.
-- **`table(align="CENTER")`** for a table narrower than the body. It is the
-  host paragraph's alignment, which is how Hangul places any inline object,
-  but no one has looked at one yet.
 - **A footnote longer than the space left on its page**, and several notes
   competing for one page foot. Only two short notes have been seen.
 - **Everything outside that document's shape.** Long tables broken across
