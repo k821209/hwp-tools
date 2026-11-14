@@ -71,18 +71,23 @@ all silently revert. `parapr()` replaces every occurrence, not the first.
 
 | call | produces |
 |---|---|
-| `para(text, …)` | `hp:p` with one `hp:run` per `**bold**` / `*italic*` span |
+| `para(text, …)` | `hp:p` with one `hp:run` per `**bold**` / `*italic*` / `` `code` `` span |
 | `heading(level, text)` | a sized, bold paragraph (1→17 pt, 2→14, 3→13) |
 | `bullet(text)` | a `·` paragraph with a hanging indent |
 | `table(rows, widths_mm=…)` | `hp:tbl` sized to `text_width`, header row shaded |
 | `image(path, width_mm=…)` | inline (`treatAsChar="1"`) PNG, aspect kept, added to `BinData/` and the `content.hpf` manifest |
 | `code(lines, lang=…)` | shaded, indented, fixed-width lines, syntax-coloured; emphasis NOT parsed |
 | `quote(text)` | shaded, indented pull-quote |
+| `footnotes({id: text})` | `hp:footNote` at each `[^id]` in body text or a table cell |
 
 Styling arguments are plain units: `size` in points, `*_mm` in millimetres
 (`first_mm` negative = hanging indent), `prev_pt`/`next_pt` space around the
 paragraph, `line_spacing` a percentage. `text_width` gives the usable width in
 HWPUNIT for sizing tables yourself.
+
+`**bold**`, `*italic*`, `` `code` `` and `[^id]` are read in `para`, `heading`,
+`bullet`, `quote` and every table cell — everything except `code()`, where
+they are syntax.
 
 Images must be **PNG** — the size is read from the IHDR so Pillow is not needed.
 
@@ -137,6 +142,55 @@ also where an *argument* lands once the option before it has been tokenised.
 `ref.fa` in `-R '…' ref.fa` is an argument, and an earlier version painted it
 as a command.
 
+## Inline code
+
+A backtick span in running text — a column name, a file, a label value — is set
+in a fixed-width face on a light shade, so it stays distinguishable from the
+words around it. A document that has to be checked against a CSV needs that:
+`원문대조A` without its styling could be a column or a phrase.
+
+```python
+b.para("열 `human_verdict` 는 비워 두었다.")      # 굴림체 on #F2F2F2 by default
+b.inline_code(face="굴림체", shade="#EEF2F7", color="#8B1E3F")
+b.inline_code(face=None, shade=None)              # backticks dropped, no styling
+```
+
+The shade is the character's own (`hh:charPr shadeColor`, 글자 모양 → 음영 색),
+not a `borderFill`. The span follows markdown: what is inside the backticks is
+literal, so `` `a*b*c` `` keeps its asterisks; a code span inside `**bold**`
+stays bold; a lone backtick with no partner prints as a backtick; double
+backticks (``` `` `x` `` ```) show a backtick inside. If the face is not in the
+template it falls back to the surrounding face (rule 3) and only the shade
+marks the span.
+
+## Footnotes
+
+Written as in markdown: a `[^id]` where the mark goes, and the text given once
+to `footnotes()`, before or after — references are resolved at `save()`.
+
+```python
+b.para("검수자 간 일치도는 κ = 0.638 이었다.[^kappa]")
+b.table([["지표", "값"], ["Cohen's κ[^kappa]", "0.638"]])   # a cell works too
+b.footnotes({"kappa": "Cohen's κ 는 우연 일치를 뺀 일치도다. 1 이 완전 일치."})
+```
+
+Each reference becomes `hp:run > hp:ctrl > hp:footNote > hp:subList > hp:p`,
+the note opening with an `hp:autoNum numType="FOOTNOTE"`. The number format and
+the rule above the notes are the template's own (`hp:footNotePr` in the borrowed
+`secPr`), and the note paragraph takes the template's `Footnote` style when it
+has one. Notes are numbered in the order their references appear, table cells
+included; a note referenced twice is written twice, since OWPML has no shared
+footnote.
+
+**A reference with no definition makes `save()` raise.** The alternative is a
+literal `[^kappa]` in the document, or a mark with nothing under it, and either
+one passes every structural check. `verify()` reports `footnotes` and
+`footnote_slots_unfilled`. Inside a code span `[^x]` is text, and so is a `[^x]`
+in the text of a footnote — notes do not nest.
+
+`hwpx_text.py` prints a note's text inline, right after its mark, so a diff
+against the markdown source shows it in the paragraph rather than at the end.
+
 ## Decoration
 
 Paragraph shading and paragraph borders are one `borderFill`, referenced from
@@ -184,13 +238,25 @@ each chapter ~30 pages with tables, figures, fenced code and a reference list:
 - **leading spaces in `code()` are preserved**, so the U+00A0 workaround that
   was being held in reserve is not needed
 
+And a check document (2026-11-14), opened by a person in Hangul:
+
+- **footnotes** — in body text and in a table cell, each dropped to the foot
+  of the page under the template's rule and numbered `1)`, `2)` in order of
+  appearance; inline code inside the note text keeps its shading
+- **inline code** — 굴림체 on the `shadeColor` shade, in body text and table
+  cells; `a*b*c` keeps its asterisks
+- **`ignore_margin=True`** — the chapter band and the section wash sit apart
+  from the body text below them instead of growing into the space after
+
 ## Known unverified
 
 - **Page headers and footers.** `page()` sets the margins reserved for them;
   writing their content needs `hp:masterPage`, which this does not do.
+- **A footnote longer than the space left on its page**, and several notes
+  competing for one page foot. Only two short notes have been seen.
 - **Everything outside that document's shape.** Long tables broken across
-  pages, nested tables, footnotes, equations and multi-section documents have
-  not been exercised.
+  pages, nested tables, equations and multi-section documents have not been
+  exercised.
 
 ## Example
 

@@ -22,6 +22,8 @@ reads, so one source produces both formats:
     - item               → bullet
     1. item              → numbered item, hanging indent
     *제목*               → sub-heading inside the reference list
+    text[^id]            → footnote reference, in body text or a table cell
+    [^id]: text          → its definition, anywhere; indented lines continue it
     everything else      → body paragraph, **bold**, *italic* and `code` kept
 
 A paragraph ends at a blank line or at the start of another block, as in
@@ -55,6 +57,29 @@ HEADING = re.compile(r"^(#{1,3})\s+(.*)")
 IMAGE = re.compile(r"^!\[.*?\]\((.+?)\)")
 NUMBERED = re.compile(r"^(\d+)\.\s+(.*)")
 CAPTION = re.compile(r"^(\*\*)?(그림|표)\s*\d")
+FOOTNOTE_DEF = re.compile(r"^\[\^([^\]\s]+)\]:\s*(.*)")
+
+
+def take_footnotes(lines):
+    """Remove `[^id]: text` definitions, returning (other lines, {id: text}).
+
+    A definition continues on following indented lines. Markdown puts the
+    definitions at the end, so they are pulled out before the body is read.
+    """
+    rest, defs, i = [], {}, 0
+    while i < len(lines):
+        m = FOOTNOTE_DEF.match(lines[i])
+        if not m:
+            rest.append(lines[i])
+            i += 1
+            continue
+        buf = [m.group(2).strip()]
+        i += 1
+        while i < len(lines) and lines[i].startswith(("    ", "\t")) and lines[i].strip():
+            buf.append(lines[i].strip())
+            i += 1
+        defs[m.group(1)] = " ".join(buf)
+    return rest, defs
 
 
 def is_table_head(lines, i):
@@ -101,7 +126,9 @@ def convert(md_path, out_path, title=None, template=None):
     body_face = BODY if BODY in b.fonts() else None
     mono_face = MONO if MONO in b.fonts() else None
 
-    lines = md.split("\n")
+    lines, notes = take_footnotes(md.split("\n"))
+    if notes:
+        b.footnotes(notes, size=9.5, face=body_face)
     i, in_refs = 0, False
     while i < len(lines):
         raw, line = lines[i], lines[i].strip()

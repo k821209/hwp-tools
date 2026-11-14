@@ -18,7 +18,7 @@ already in it. Only `Contents/section0.xml` is written fresh.
     b = HwpxBuilder("template.hwpx")
     b.page(margins_mm={"top": 15, "bottom": 15, "left": 25, "right": 25})
     b.heading(1, "제3장 진핵생물 데이터 분석")
-    b.para("본문 문단. **굵게** 와 *기울임* 이 산다.")
+    b.para("본문 문단. **굵게** 와 *기울임*, `코드` 가 산다.")
     b.table([["항목", "값"], ["유전체 크기", "수백 Mb"]])
     b.image("fig3-1.png", width_mm=120)
     b.para("그림 3-1. 설명.", size=10, align="CENTER")
@@ -46,6 +46,20 @@ HPF = "Contents/content.hpf"
 MM = 7200 / 25.4
 
 _EMPH = re.compile(r"\*\*(.+?)\*\*|(?<!\*)\*(?!\*)(.+?)(?<!\*)\*(?!\*)")
+
+#: A code span: a run of N backticks closed by a run of exactly N.
+_CODE = re.compile(r"(?<!`)(`+)(?!`)(.+?)(?<!`)\1(?!`)", re.S)
+
+#: Private-use code points stand in for code spans while emphasis is parsed,
+#: so a `*` inside `a*b*c` is never read as italic. Hangul text can carry
+#: private-use characters of its own (HNC fonts put old hanja and symbols
+#: there), so only code points absent from the paragraph are used.
+_PUA0, _PUA1 = 0xE000, 0xF8FF
+
+#: A footnote reference, markdown style: [^id].
+_FNREF = re.compile(r"\[\^([^\]\s]+)\]")
+#: Where a reference sits in the body until save() knows every definition.
+_FNSLOT = re.compile(r"<!--hwpx-build:fn:(\d+)-->")
 
 _SECTION_HEAD = (
     '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n'
@@ -116,6 +130,9 @@ class HwpxBuilder:
         self._body: list[str] = []
         self._images: list[tuple[str, Path]] = []
         self._instid = 1000000
+        self._fn_defs: dict = {}      # footnote id → text
+        self._fn_refs: list = []      # footnote id per reference, in order written
+        self._fn_style = (9.5, None)
 
     # ------------------------------------------------------------- header ids
 
@@ -176,19 +193,21 @@ class HwpxBuilder:
         return tag[:-1].rstrip("/") + f' {name}="{value}"' + ("/>" if tag.endswith("/>") else ">")
 
     def charpr(self, size=13.0, bold=False, italic=False, color="#000000",
-               face=None, fill=None) -> str:
+               face=None, fill=None, shade=None) -> str:
         """Character properties id. Cloned from the template's first charPr.
 
         `size` in points, `face` a font name from `fonts()`, `fill` a
-        borderFill id for character shading.
+        borderFill id for character borders/background, `shade` a colour for
+        the character shade (Hangul's 글자 모양 → 음영 색).
         """
-        key = ("c", size, bold, italic, color.upper(), face, fill)
+        key = ("c", size, bold, italic, color.upper(), face, fill, shade)
         if key in self._cache:
             return self._cache[key]
 
         def mutate(tag, inner):
             tag = self._set_attr(tag, "height", str(int(round(size * 100))))
             tag = self._set_attr(tag, "textColor", color)
+            tag = self._set_attr(tag, "shadeColor", shade or "none")
             if fill is not None:
                 tag = self._set_attr(tag, "borderFillIDRef", str(fill))
             if face:
@@ -213,19 +232,24 @@ class HwpxBuilder:
 
     def parapr(self, align="JUSTIFY", left_mm=0.0, right_mm=0.0, first_mm=0.0,
                prev_pt=0.0, next_pt=0.0, line_spacing=160, fill=None,
-               border_edges=(), border_offsets=(283, 283, 142, 142)) -> str:
+               border_edges=(), border_offsets=(283, 283, 142, 142),
+               ignore_margin=True) -> str:
         """Paragraph properties id.
 
         `first_mm` negative gives a hanging indent. `fill` shades the paragraph,
         `border_edges` is any of ("left","right","top","bottom").
 
         `border_offsets` is (left, right, top, bottom) in HWPUNIT: how far the
-        shaded box extends BEYOND the text. It eats into `prev_pt`/`next_pt`,
-        so a heading on a band needs the space after it to exceed the bottom
-        offset or the box closes on the first body line.
+        shaded box extends beyond the text.
+
+        `ignore_margin` keeps the box off the paragraph's own space before and
+        after. With it False the shading covers that space too, so raising
+        `next_pt` to push a heading away from the body just makes the box
+        taller and the gap never appears.
         """
         key = ("p", align, left_mm, right_mm, first_mm, prev_pt, next_pt,
-               line_spacing, fill, tuple(border_edges), tuple(border_offsets))
+               line_spacing, fill, tuple(border_edges), tuple(border_offsets),
+               ignore_margin)
         if key in self._cache:
             return self._cache[key]
 
@@ -254,8 +278,9 @@ class HwpxBuilder:
             bf = fill if fill is not None else self._base_borderfill
         ol, orr, ot, ob = border_offsets
         border = ('<hh:border borderFillIDRef="{bf}" offsetLeft="{l}" offsetRight="{r}" '
-                  'offsetTop="{t}" offsetBottom="{b}" connect="0" ignoreMargin="0"/>'
-                  ).format(bf=bf, l=int(ol), r=int(orr), t=int(ot), b=int(ob))
+                  'offsetTop="{t}" offsetBottom="{b}" connect="0" ignoreMargin="{ig}"/>'
+                  ).format(bf=bf, l=int(ol), r=int(orr), t=int(ot), b=int(ob),
+                           ig=1 if ignore_margin else 0)
 
         def mutate(tag, inner):
             inner = re.sub(r"<hh:align\b[^>]*/>",
@@ -329,25 +354,155 @@ class HwpxBuilder:
 
     # ------------------------------------------------------------------ runs
 
-    def _runs(self, text, size, bold, color, face) -> str:
-        """Split on **bold** / *italic*, one hp:run per span."""
-        out, pos = [], 0
-        for m in _EMPH.finditer(text):
+    def inline_code(self, face="굴림체", shade="#F2F2F2", color=None):
+        """How `` `code` `` spans inside para/heading/bullet/table text are set.
+
+        `face` must be in `fonts()` (rule 3) or the span falls back to the
+        surrounding face and only the shade marks it. `color=None` keeps the
+        surrounding text colour. Call with `face=None, shade=None` to switch
+        the styling off; the backticks are still removed.
+        """
+        self._code_style = (face, shade, color)
+        return self
+
+    def _runs(self, text, size, bold, color, face, notes=True) -> str:
+        """One hp:run per span: **bold**, *italic*, `code`, and [^id] notes.
+
+        Code spans are cut out first, as in markdown: what is between
+        backticks is literal, so `a*b*c` keeps its asterisks and `[^x]`
+        stays text. A code span inside bold stays bold. With `notes` False
+        (the text of a footnote itself) a [^id] is left as written.
+        """
+        spans = {}                      # placeholder char -> ("code"|"fn", text)
+        free = (chr(c) for c in range(_PUA0, _PUA1 + 1) if chr(c) not in text)
+
+        def hold(m):
+            body = m.group(2)
+            # CommonMark: one space either side is padding, so `` `x` `` can
+            # show a backtick next to the fence.
+            if len(body) > 2 and body[0] == body[-1] == " " and body.strip():
+                body = body[1:-1]
+            ph = next(free, None)
+            if ph is None:
+                return m.group(0)
+            spans[ph] = ("code", body)
+            return ph
+
+        def hold_note(m):
+            ph = next(free, None)
+            if ph is None:
+                return m.group(0)
+            spans[ph] = ("fn", m.group(1))
+            return ph
+
+        held = _CODE.sub(hold, text) if "`" in text else text
+        if notes and "[^" in held:
+            held = _FNREF.sub(hold_note, held)
+
+        pieces, pos = [], 0
+        for m in _EMPH.finditer(held):
             if m.start() > pos:
-                out.append((text[pos:m.start()], bold, False))
+                pieces.append((held[pos:m.start()], bold, False))
             if m.group(1) is not None:
-                out.append((m.group(1), True, False))
+                pieces.append((m.group(1), True, False))
             else:
-                out.append((m.group(2), bold, True))
+                pieces.append((m.group(2), bold, True))
             pos = m.end()
-        if pos < len(text):
-            out.append((text[pos:], bold, False))
+        if pos < len(held):
+            pieces.append((held[pos:], bold, False))
+
+        out = []          # (text, bold, italic, is_code)
+        for t, b, i in pieces:
+            last = 0
+            for k, ch in enumerate(t) if spans else ():
+                if ch in spans:
+                    if k > last:
+                        out.append((t[last:k], b, i, False))
+                    kind, val = spans[ch]
+                    out.append((val, b, i, kind))
+                    last = k + 1
+            if last < len(t):
+                out.append((t[last:], b, i, None))
         if not out:
-            out = [("", bold, False)]
-        return "".join(
-            '<hp:run charPrIDRef="%s"><hp:t>%s</hp:t></hp:run>'
-            % (self.charpr(size=size, bold=b, italic=i, color=color, face=face), _esc(t))
-            for t, b, i in out)
+            out = [("", bold, False, None)]
+
+        cface, cshade, ccolor = getattr(self, "_code_style", ("굴림체", "#F2F2F2", None))
+        if cface and cface not in self.fonts():
+            cface = None          # rule 3: never name a face the header lacks
+
+        def run(t, b, i, kind):
+            if kind == "fn":
+                # The control goes in its own run, inside hp:ctrl. Its content
+                # is written at save(), once every definition is known.
+                self._fn_refs.append(t)
+                return ('<hp:run charPrIDRef="%s"><hp:ctrl><!--hwpx-build:fn:%d-->'
+                        '</hp:ctrl></hp:run>'
+                        % (self.charpr(size=size, bold=b, italic=i, color=color,
+                                       face=face), len(self._fn_refs) - 1))
+            if kind == "code":
+                cid = self.charpr(size=size, bold=b, italic=i, color=ccolor or color,
+                                  face=cface or face, shade=cshade)
+            else:
+                cid = self.charpr(size=size, bold=b, italic=i, color=color, face=face)
+            return '<hp:run charPrIDRef="%s"><hp:t>%s</hp:t></hp:run>' % (cid, _esc(t))
+
+        return "".join(run(*o) for o in out)
+
+    # ------------------------------------------------------------- footnotes
+
+    def footnotes(self, defs, size=9.5, face=None):
+        """Define footnotes, referenced as `[^id]` in any paragraph or table cell.
+
+        `defs` maps id → text; the text reads **bold**, *italic* and `code`.
+        Definitions may come before or after the references — they are
+        resolved at save(), as markdown puts them at the end. A reference with
+        no definition makes save() raise rather than print `[^id]`.
+
+        Numbering is the template's (`hp:footNotePr` in the borrowed secPr)
+        and runs in the order references appear. A note referenced twice is
+        written twice: OWPML has no shared footnote.
+        """
+        self._fn_defs.update(defs)
+        self._fn_style = (size, face)
+        return self
+
+    def _footnote_xml(self, n, text) -> str:
+        fmt = re.search(r"<hp:footNotePr>\s*(<hp:autoNumFormat\b[^>]*/>)", self.secpr)
+        fmt = fmt.group(1) if fmt else ('<hp:autoNumFormat type="DIGIT" userChar="" '
+                                        'prefixChar="" suffixChar=")" supscript="0"/>')
+        suffix = re.search(r'suffixChar="([^"]*)"', fmt).group(1)
+        style = re.search(r'<hh:style id="(\d+)" type="PARA" [^>]*engName="Footnote"',
+                          self.header)
+        style = style.group(1) if style else "0"
+        size, face = self._fn_style
+        pp = self.parapr(align="JUSTIFY", line_spacing=130)
+        num = ('<hp:run charPrIDRef="%s"><hp:ctrl><hp:autoNum num="%d" numType="FOOTNOTE">'
+               '%s</hp:autoNum></hp:ctrl><hp:t> </hp:t></hp:run>'
+               % (self.charpr(size=size, face=face), n, fmt))
+        body = self._runs(text, size, False, "#000000", face, notes=False)
+        self._instid += 1
+        return ('<hp:footNote number="{n}" suffixChar="{sc}" instId="{i}">'
+                '<hp:subList id="" textDirection="HORIZONTAL" lineWrap="BREAK" '
+                'vertAlign="TOP" linkListIDRef="0" linkListNextIDRef="0" textWidth="0" '
+                'textHeight="0" hasTextRef="0" hasNumRef="0">'
+                '<hp:p id="0" paraPrIDRef="{pp}" styleIDRef="{st}" pageBreak="0" '
+                'columnBreak="0" merged="0">{num}{body}</hp:p></hp:subList></hp:footNote>'
+                ).format(n=n, sc=ord(suffix) if suffix else 0, i=self._instid, pp=pp,
+                         st=style, num=num, body=body)
+
+    def _fill_footnotes(self, xml) -> str:
+        missing = sorted({self._fn_refs[int(k)] for k in _FNSLOT.findall(xml)}
+                         - set(self._fn_defs))
+        if missing:
+            raise HwpxBuildError(
+                "footnote reference(s) with no definition: "
+                + ", ".join(f"[^{m}]" for m in missing)
+                + " — pass them to footnotes()")
+        counter = iter(range(1, len(self._fn_refs) + 1))
+        return _FNSLOT.sub(
+            lambda m: self._footnote_xml(next(counter),
+                                         self._fn_defs[self._fn_refs[int(m.group(1))]]),
+            xml)
 
     def _p(self, para_pr, body, style="0") -> str:
         # No hp:linesegarray is written. It is a layout cache keyed to text that
@@ -361,11 +516,12 @@ class HwpxBuilder:
     def para(self, text="", size=13.0, bold=False, color="#000000", face=None,
              align="JUSTIFY", left_mm=0.0, first_mm=0.0, prev_pt=0.0, next_pt=0.0,
              line_spacing=160, fill=None, border_edges=(),
-             border_offsets=(283, 283, 142, 142)):
+             border_offsets=(283, 283, 142, 142), ignore_margin=True):
         pp = self.parapr(align=align, left_mm=left_mm, first_mm=first_mm,
                          prev_pt=prev_pt, next_pt=next_pt, line_spacing=line_spacing,
                          fill=fill, border_edges=border_edges,
-                         border_offsets=border_offsets)
+                         border_offsets=border_offsets,
+                         ignore_margin=ignore_margin)
         self._body.append(self._p(pp, self._runs(text, size, bold, color, face)))
         return self
 
@@ -562,7 +718,10 @@ class HwpxBuilder:
         first = self._body[0]
         cp = self.charpr()
         first = first.replace(">", f'><hp:run charPrIDRef="{cp}">{self.secpr}</hp:run>', 1)
-        return _SECTION_HEAD + first + "".join(self._body[1:]) + "</hs:sec>"
+        body = first + "".join(self._body[1:])
+        if self._fn_refs:
+            body = self._fill_footnotes(body)
+        return _SECTION_HEAD + body + "</hs:sec>"
 
     def _header_xml(self) -> str:
         h = self.header
@@ -698,6 +857,9 @@ class HwpxBuilder:
 
         r["images"] = len(re.findall(r"<hc:img\b", section))
         r["tables"] = len(re.findall(r"<hp:tbl\b", section))
+        r["footnotes"] = len(re.findall(r"<hp:footNote\b", section))
+        # A reference slot that save() did not fill is a footnote lost silently.
+        r["footnote_slots_unfilled"] = len(_FNSLOT.findall(section))
         # A control object placed as a direct child of hp:p instead of inside an
         # hp:run passes every other check here, reads back from the XML, and is
         # dropped by Hangul on open. Count the ones sitting loose.
