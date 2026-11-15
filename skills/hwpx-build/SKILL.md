@@ -191,7 +191,9 @@ lines = [t + " " * (w - mono_cols(t)) + "# note" for t in rows]
 Two things this does not cover. Unicode marks most of those symbols as
 "ambiguous" width and a Western monospace face draws them one column wide, so
 the same source exported elsewhere (a `.docx` in Noto Sans Mono CJK, say) can
-misalign — count for the face the document is set in. And characters outside
+misalign — count for the face the document is set in. **A source that is
+also exported to `.docx` or `.pdf` should not align at all**: no single count
+is right in both faces, and indentation with ASCII spaces is. And characters outside
 the tested set — accented Latin, emoji, half-width kana — are unmeasured; if a
 block depends on them, indent instead of aligning: put the note on the next
 line, so no column has to agree.
