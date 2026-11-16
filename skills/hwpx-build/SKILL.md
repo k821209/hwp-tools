@@ -51,7 +51,19 @@ an id. Adding a face to `hh:fontfaces` does not install it — Hangul substitute
 on open, and you get a document whose code blocks are set in the body face
 without any error to tell you. Pick from the template, or pick a template that
 carries the face you want. `굴림체` is the fixed-width face present in
-essentially every Hangul install.
+essentially every Hangul install — but not in every Hangul *document*, and the
+font table is the document's.
+
+Two things now say so instead of the reader having to know. Before building,
+`HwpxBuilder.check_template(path)` reports the template's fonts, which of them
+are fixed-width, its page set-up, whether its `secPr` carries a `colPr`, and
+whether it has a Footnote style, with `warnings` for anything that would make a
+build quietly wrong ("no fixed-width face — code() and inline code will be set
+in the body face"). While building, every face that falls back is recorded in
+`builder.font_fallbacks` (`{"굴림체": ["함초롬바탕", "굴림"]}` — one entry per
+substitute actually used) and raised once as a `UserWarning`. `verify()` cannot
+report it: it reads the finished file, which holds the face that was used, not
+the one that was asked for.
 
 **4. A table or a picture goes inside an `hp:run`, never straight into `hp:p`.**
 `hp:tbl` and `hp:pic` are control objects and live where a run of text would.

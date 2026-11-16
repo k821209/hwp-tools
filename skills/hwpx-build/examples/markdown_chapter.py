@@ -288,6 +288,10 @@ if __name__ == "__main__":
     template = sys.argv[4] if len(sys.argv) > 4 else None
     if not template:
         sys.exit("a template .hwpx is required — see SKILL.md on why")
-    convert(md, out, title, template)
     import json
+    for w in HwpxBuilder.check_template(template)["warnings"]:
+        print("template:", w, file=sys.stderr)
+    b = convert(md, out, title, template)
+    if b.font_fallbacks:
+        print("font fallbacks:", b.font_fallbacks, file=sys.stderr)
     print(json.dumps(HwpxBuilder.verify(out), ensure_ascii=False, indent=1))

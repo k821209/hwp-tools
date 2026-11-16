@@ -32,6 +32,7 @@ from __future__ import annotations
 
 import re
 import struct
+import warnings
 import xml.etree.ElementTree as ET
 import zipfile
 from pathlib import Path
@@ -157,6 +158,10 @@ class HwpxBuilder:
         self._fn_refs: list = []      # footnote id per reference, in order written
         self._fn_style = (9.5, None)
         self._pagenum = ""            # hp:pageNum ctrl, written beside secPr
+        #: face asked for → the faces actually used in its place, for every
+        #: face the template lacks. Hangul would substitute silently and so would this builder;
+        #: this is the record that it happened.
+        self.font_fallbacks: dict = {}
 
     # ------------------------------------------------------------- header ids
 
@@ -180,7 +185,19 @@ class HwpxBuilder:
         the font table means Hangul substitutes on open anyway. Pick from
         `builder.fonts()` instead of naming a face and hoping.
         """
-        return self._fonts.get(face, default)
+        if face in self._fonts:
+            return self._fonts[face]
+        used = next((f for f, i in self._fonts.items() if i == default), f"font id {default}")
+        self._note_fallback(face, used)
+        return default
+
+    def _note_fallback(self, face, used):
+        seen = self.font_fallbacks.setdefault(face, [])
+        if used in seen:
+            return
+        seen.append(used)
+        warnings.warn(f"font {face!r} is not in the template; {used!r} is used instead "
+                      f"(see check_template())", stacklevel=3)
 
     def fonts(self) -> dict:
         return dict(self._fonts)
@@ -515,6 +532,7 @@ class HwpxBuilder:
 
         cface, cshade, ccolor = getattr(self, "_code_style", ("굴림체", "#F2F2F2", None))
         if cface and cface not in self.fonts():
+            self._note_fallback(cface, face or "the surrounding face")
             cface = None          # rule 3: never name a face the header lacks
 
         def run(t, b, i, kind):
@@ -943,6 +961,58 @@ class HwpxBuilder:
                 if r not in written and r.startswith("Preview/"):
                     zout.writestr(r, preview.encode("utf-8"))
         return out
+
+    # -------------------------------------------------------------- template
+
+    #: Fixed-width faces a Korean Hangul install commonly carries.
+    MONO_FACES = ("굴림체", "바탕체", "돋움체", "궁서체", "D2Coding", "나눔고딕코딩",
+                  "Consolas", "Courier New", "HY견명조체")
+
+    @staticmethod
+    def check_template(path):
+        """What a template offers, before anything is built on it.
+
+        Rule 1 makes the template a precondition and rule 3 makes its font
+        table a limit: a face it lacks falls back to another without a word.
+        This reports the fonts, which of them are fixed-width, the page set-up
+        it brings, whether its secPr travels with a colPr, and whether it has
+        a Footnote style — and lists as `warnings` whatever would make a build
+        on it quietly wrong. Each check that could not be made is None.
+        """
+        path = Path(path)
+        r = {"template": str(path), "fonts": None, "mono_faces": None,
+             "secpr": None, "secpr_with_colpr": None, "page_mm": None,
+             "footnote_style": None, "warnings": []}
+        try:
+            b = HwpxBuilder(path)
+        except (HwpxBuildError, zipfile.BadZipFile, KeyError) as e:
+            r["warnings"].append(f"not usable as a template: {e}")
+            return r
+        fonts = b.fonts()
+        r["fonts"] = sorted(fonts)
+        r["mono_faces"] = [f for f in fonts if f in HwpxBuilder.MONO_FACES]
+        r["secpr"] = True
+        with zipfile.ZipFile(path) as z:
+            sec = z.read(SECTION).decode("utf-8")
+        sp = re.search(r"</hp:secPr>\s*(<hp:ctrl>\s*<hp:colPr\b)?", sec)
+        r["secpr_with_colpr"] = bool(sp and sp.group(1))
+        g = b._page_geom()
+        r["page_mm"] = {k: round(v / MM, 1) for k, v in g.items()}
+        r["page_mm"]["text_width"] = round(b.text_width / MM, 1)
+        r["footnote_style"] = bool(re.search(
+            r'<hh:style\b[^>]*type="PARA"[^>]*engName="Footnote"', b.header))
+        if not r["mono_faces"]:
+            r["warnings"].append("no fixed-width face — code() and inline code will "
+                                 "be set in the body face")
+        elif "굴림체" not in fonts:
+            r["warnings"].append(f"굴림체 missing — pass face={r['mono_faces'][0]!r} to "
+                                 "code() and inline_code(); mono_cols() was measured "
+                                 "on 굴림체 only")
+        if "함초롬바탕" not in fonts:
+            r["warnings"].append("함초롬바탕 missing — the example's body face falls back")
+        if not r["footnote_style"]:
+            r["warnings"].append("no Footnote style — footnotes take the base style")
+        return r
 
     # ---------------------------------------------------------------- verify
 
