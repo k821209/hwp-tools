@@ -15,7 +15,7 @@ already in it. Only `Contents/section0.xml` is written fresh.
 
     from hwpx_build import HwpxBuilder
 
-    b = HwpxBuilder("template.hwpx")
+    b = HwpxBuilder()                    # the shipped blank template; or a path
     b.page(margins_mm={"top": 15, "bottom": 15, "left": 25, "right": 25})
     b.heading(1, "제3장 진핵생물 데이터 분석")
     b.para("본문 문단. **굵게** 와 *기울임*, `코드` 가 산다.")
@@ -42,6 +42,9 @@ __all__ = ["HwpxBuilder", "HwpxBuildError", "mono_cols"]
 SECTION = "Contents/section0.xml"
 HEADER = "Contents/header.xml"
 HPF = "Contents/content.hpf"
+
+#: The blank template this skill ships (header written by Hangul, no content).
+BASE_TEMPLATE = Path(__file__).resolve().parent.parent / "template" / "base.hwpx"
 
 #: 1 mm in HWPUNIT (1/7200 inch).
 MM = 7200 / 25.4
@@ -116,8 +119,12 @@ def _png_size(path: Path):
 class HwpxBuilder:
     """Assemble a section body against a Hangul-made template header."""
 
-    def __init__(self, template):
-        self.template = Path(template)
+    def __init__(self, template=None):
+        # A template is not optional in principle (rule 1: the header must be
+        # one Hangul wrote). Without one named, use the blank one shipped here.
+        self.template = Path(template) if template else BASE_TEMPLATE
+        if not self.template.exists():
+            raise HwpxBuildError(f"template not found: {self.template}")
         with zipfile.ZipFile(self.template) as z:
             names = set(z.namelist())
             for part in (SECTION, HEADER, HPF):

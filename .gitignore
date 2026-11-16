@@ -3,6 +3,8 @@ __pycache__/
 # never commit documents — they may carry unpublished content
 *.hwp
 *.hwpx
+# ...except the blank template hwpx-build ships (no document content — see its SKILL.md)
+!skills/hwpx-build/template/base.hwpx
 *.pdf
 .DS_Store
 

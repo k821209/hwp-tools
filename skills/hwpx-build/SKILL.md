@@ -13,7 +13,7 @@ a chapter, a report, a manual — from a structured description.
 ```python
 from hwpx_build import HwpxBuilder
 
-b = HwpxBuilder("template.hwpx")                 # a real Hangul file, for its header
+b = HwpxBuilder()                                # shipped blank template; or a path
 b.page(margins_mm={"top": 15, "bottom": 15, "left": 25, "right": 25})
 b.heading(1, "제3장 진핵생물 데이터 분석")
 b.para("본문입니다. **굵게** 와 *기울임* 이 삽니다.", face="함초롬바탕")
@@ -25,6 +25,27 @@ b.quote("함정 — 배수성을 확인하지 않고 시작하는 것.")
 b.save("out.hwpx")
 HwpxBuilder.verify("out.hwpx", expect_images=1, expect_tables=1)
 ```
+
+## The template that ships here
+
+`template/base.hwpx` is a blank template, so a clone of this repository can
+build without hunting for a Hangul file first. Its `header.xml` — fonts,
+character and paragraph properties, border fills, styles — was written by
+Hangul (2022, v12) for a government application form; the form's body, its
+preview text and thumbnail and its images were all removed, and nothing of
+its content remains in the archive. What it brings:
+
+- 17 faces including 함초롬바탕, 함초롬돋움, 맑은 고딕, 바탕, 돋움 and the
+  fixed-width 굴림체
+- a Footnote style, and `footNotePr` numbering as "1)"
+- A4, 20 mm sides, 20 mm top, 15 mm bottom, 10 mm header and footer (change
+  with `page()`)
+- `secPr` with its `colPr`
+
+`HwpxBuilder()` with no argument uses it; `HwpxBuilder("x.hwpx")` uses yours.
+`HwpxBuilder.check_template("template/base.hwpx")` reports no warnings. Use
+your own template when the document has a house style; run
+`check_template()` on it first.
 
 ## The six rules
 
@@ -417,5 +438,7 @@ Two things about that subset you would otherwise learn from the output:
   under another one starts its own item at the outer level.
 
 ```
-python3 markdown_chapter.py chapter.md out.hwpx "제3장 …" template.hwpx
+python3 markdown_chapter.py chapter.md out.hwpx "제3장 …" [template.hwpx]
 ```
+
+The template defaults to `template/base.hwpx`.

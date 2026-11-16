@@ -51,7 +51,7 @@ pull-quotes, reference lists.
 ```python
 from hwpx_build import HwpxBuilder
 
-b = HwpxBuilder("template.hwpx")          # a real Hangul file, for its header
+b = HwpxBuilder()                         # shipped blank template, or HwpxBuilder("yours.hwpx")
 b.page(margins_mm={"top": 15, "bottom": 15, "left": 25, "right": 25})
 b.heading(1, "제3장 진핵생물 데이터 분석")
 b.para("본문입니다. **굵게** 와 *기울임* 이 삽니다.", face="함초롬바탕")
@@ -65,7 +65,10 @@ It does **not** write `header.xml` from scratch — that is where files that pas
 every check and still refuse to open come from. A template `.hwpx` supplies the
 font table, border fills and style tables, and the builder clones the character
 and paragraph properties it needs out of it. Only `Contents/section0.xml` is
-written fresh.
+written fresh. A blank one ships as
+[`template/base.hwpx`](skills/hwpx-build/template/base.hwpx) and is used when
+none is named; `HwpxBuilder.check_template()` tells you whether another is fit
+to use.
 
 Read [`skills/hwpx-build/SKILL.md`](skills/hwpx-build/SKILL.md) — six rules,
 and a note on what has *not* been verified.

@@ -9,6 +9,8 @@ reference list. Written for a Korean submission with a fixed typographic spec
 
     python3 markdown_chapter.py chapter.md out.hwpx "제3장 …" [template.hwpx]
 
+Without a template it uses ../template/base.hwpx.
+
 The markdown subset it reads — the same one a matching python-docx builder
 reads, so one source produces both formats:
 
@@ -285,9 +287,10 @@ if __name__ == "__main__":
     if len(sys.argv) < 4:
         sys.exit(__doc__.strip().split("\n\n")[2])
     md, out, title = sys.argv[1], sys.argv[2], sys.argv[3]
-    template = sys.argv[4] if len(sys.argv) > 4 else None
-    if not template:
-        sys.exit("a template .hwpx is required — see SKILL.md on why")
+    # A template is required (rule 1); without one named, HwpxBuilder uses
+    # the blank one this skill ships.
+    from hwpx_build import BASE_TEMPLATE
+    template = sys.argv[4] if len(sys.argv) > 4 else str(BASE_TEMPLATE)
     import json
     for w in HwpxBuilder.check_template(template)["warnings"]:
         print("template:", w, file=sys.stderr)
