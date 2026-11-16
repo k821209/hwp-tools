@@ -116,7 +116,7 @@ the difference — which is how this was found, reported as a table-margin bug
 | `para(text, …)` | `hp:p` with one `hp:run` per `**bold**` / `*italic*` / `` `code` `` span |
 | `heading(level, text)` | a sized, bold paragraph (1→17 pt, 2→14, 3→13) |
 | `bullet(text)` | a `·` paragraph with a hanging indent |
-| `table(rows, widths_mm=…, align=…, page_break=…, inline=…)` | `hp:tbl`, header row shaded and repeated on each page; full `text_width` split evenly, or exactly `widths_mm` (wider than the body raises); splits between rows at a page boundary |
+| `table(rows, widths_mm=…, align=…, page_break=…, inline=…)` | `hp:tbl`, header row shaded and repeated on each page; columns sized to their content to keep the table short (`"equal"` splits evenly; a list of mm is used as given, wider than the body raises); splits between rows at a page boundary |
 | `page_number(pos=…, fmt=…, side_char=…, start=…)` | one `hp:pageNum` control: "- 1 -" at the foot of every page by default |
 | `image(path, width_mm=…)` | inline (`treatAsChar="1"`) PNG, aspect kept, added to `BinData/` and the `content.hpf` manifest |
 | `code(lines, lang=…)` | shaded, indented, fixed-width lines, syntax-coloured; emphasis NOT parsed |
@@ -257,6 +257,32 @@ stays bold; a lone backtick with no partner prints as a backtick; double
 backticks (``` `` `x` `` ```) show a backtick inside. If the face is not in the
 template it falls back to the surrounding face (rule 3) and only the shade
 marks the span.
+
+## Column widths
+
+Without `widths_mm`, `table()` shares the body width out to make the table as
+short as it can. Splitting it evenly gives a two-character "번호" column the
+same room as a three-line description, so the description folds and every row
+grows; a Korean report table, whose columns differ a lot in length, pays that
+on nearly every row.
+
+What is minimised is the table's height in lines — per row, its tallest cell —
+estimated by laying each cell's text out the way Hangul does. Every column
+keeps at least the width its header needs on one line. The rest starts in
+proportion to each column's longest cell and moves 1 mm at a time from column
+to column while the estimate drops.
+
+The estimate encodes two things measured in Hangul, both against the grain of
+the XML: **Korean breaks between any two syllables** although the paragraph
+says `breakNonLatinWord="KEEP_WORD"`, while a run of Latin letters, digits
+and ASCII punctuation moves to the next line whole (a URL wider than the line
+is broken); and **a space is about half an em**. Read against 32 rows of
+three tables in both layouts it was exact on 31 and one line high on the
+last, never low. On those tables the automatic layout took 12 lines where the
+even split took 22, and 10 where it took 19, with every header on one line.
+
+`widths_mm="equal"` restores the even split; a list of millimetres is used as
+given.
 
 ## Tables across pages
 
@@ -404,6 +430,9 @@ And a check document (2026-11-14), opened by a person in Hangul:
   with `"NONE"`; inline tables moved whole whatever the setting; header rows
   repeated; a 30-row centred table ran over three pages
 - **page numbers** — "- 1 -" … "- 6 -" at the foot of each page
+- **automatic column widths** — three tables, even vs automatic: 22 → 12 and
+  19 → 10 lines, headers on one line, Latin identifiers and a URL inside
+  their cells; the line estimate matched 31 of 32 rows
 - from `markdown_chapter.py`: a hard-wrapped source paragraph comes out as one
   paragraph, a `1. ` item's continuation line lines up under the hanging
   indent, and a bold-led caption is justified

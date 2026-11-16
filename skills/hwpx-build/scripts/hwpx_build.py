@@ -102,6 +102,62 @@ def mono_cols(text: str) -> int:
     return sum(1 if ord(c) < 128 else 2 for c in text)
 
 
+_MARKUP = re.compile(r"\*\*|(?<!\*)\*(?!\*)|`")
+
+
+def _glyph_em(c: str) -> float:
+    """Rough advance of one character in a proportional Korean face, in em.
+
+    Hangul, hanja and full-width symbols are one em. Latin in 함초롬바탕 is
+    proportional; 0.55 em is an average, not a measurement of any letter.
+    The space is half an em, read back from where Hangul broke lines.
+    """
+    o = ord(c)
+    if c == " ":
+        return 0.5
+    if o < 128:
+        return 0.55 if c.isalnum() else 0.35
+    return 1.0 if o >= 0x2000 else 0.55
+
+
+def _cell_lines(text: str, cap_em: float, bold: bool = False) -> int:
+    """Lines `text` takes in a cell `cap_em` wide.
+
+    As measured in Hangul (#14): Korean breaks between any two syllables —
+    despite breakNonLatinWord="KEEP_WORD" in the paragraph, the name reads the
+    other way round — while a run of Latin letters, digits and ASCII
+    punctuation moves to the next line whole, and is broken only when it is
+    wider than the line by itself (a long URL).
+
+    Checked against 32 table rows read off Hangul: 31 exact, one a line too
+    many, none too few — so it errs toward a taller table, not a clipped one.
+    """
+    if cap_em <= 0:
+        return 10 ** 6
+    cap = cap_em
+    text = _FNREF.sub("¹", _MARKUP.sub("", text))
+    k = 1.04 if bold else 1.0
+    total = 0
+    for para in text.split("\n"):
+        units = re.findall(r" +|[!-~]+|[^ !-~]", para)
+        lines, used = 1, 0.0
+        for u in units:
+            w = sum(_glyph_em(c) for c in u) * k
+            if u[0] == " ":
+                if used:
+                    used += w                    # dropped if the line breaks here
+                continue
+            if used and used + w > cap:
+                lines, used = lines + 1, 0.0
+            if w > cap:                          # wider than a line on its own
+                extra = int(w // cap)
+                lines += extra
+                w -= extra * cap
+            used += w
+        total += lines
+    return total
+
+
 def _esc(s: str) -> str:
     return (s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
              .replace('"', "&quot;"))
@@ -710,12 +766,74 @@ class HwpxBuilder:
         self.para(text, size=size, face=face, left_mm=5, prev_pt=6, next_pt=6, fill=bf)
         return self
 
+    _CELL_PAD = 1020        # inMargin left + right, HWPUNIT
+
+    def _table_lines(self, rows, widths, size, header=True):
+        """Estimated height of a table in lines: per row, its tallest cell."""
+        em = size * 100.0                      # 1 pt = 100 HWPUNIT
+        return sum(max(_cell_lines(v, (w - self._CELL_PAD) / em, header and ri == 0)
+                       for v, w in zip(row, widths))
+                   for ri, row in enumerate(rows))
+
+    def _auto_widths(self, rows, size, header=True):
+        """Column widths (HWPUNIT, summing to text_width) that keep the table short.
+
+        Each column gets at least the width its header needs to stay on one
+        line, or its longest word if that is narrower — a header broken a
+        syllable per line cannot be read. What is left starts out shared in
+        proportion to each column's longest cell, and then 1 mm at a time is
+        moved from one column to another while that lowers the estimated
+        total of lines. The estimate is a model of Hangul's layout, not
+        Hangul's layout; its errors fall where it guesses glyph widths.
+        """
+        total, ncol = self.text_width, len(rows[0])
+        if ncol == 1:
+            return [total]
+        em = size * 100.0
+        pad = self._CELL_PAD
+
+        def need(text, bold):                  # em width of text on one line
+            return sum(_glyph_em(c) for c in _MARKUP.sub("", text)) * (1.04 if bold else 1)
+
+        floors = []
+        for j in range(ncol):
+            head = need(rows[0][j], True) if header else 0
+            longest = max((need(w, False) for r in rows[1 if header else 0:]
+                           for w in r[j].split()), default=0)
+            floors.append(int(max(head, min(longest, 6), 2) * em) + pad)
+        if sum(floors) > total:                 # cannot honour them all: scale
+            floors = [f * total // sum(floors) for f in floors]
+        free = total - sum(floors)
+        weight = [max(need(r[j], False) for r in rows) or 1 for j in range(ncol)]
+        w = [floors[j] + int(free * weight[j] / sum(weight)) for j in range(ncol)]
+        w[-1] += total - sum(w)
+
+        best = self._table_lines(rows, w, size, header)
+        for step in (int(4 * MM), int(MM), int(MM / 4)):
+            improved = True
+            while improved:
+                improved = False
+                for a in range(ncol):
+                    for b_ in range(ncol):
+                        if a == b_ or w[a] - step < floors[a]:
+                            continue
+                        w[a] -= step; w[b_] += step
+                        t = self._table_lines(rows, w, size, header)
+                        if t < best:
+                            best, improved = t, True
+                        else:
+                            w[a] += step; w[b_] -= step
+        return w
+
     def table(self, rows, widths_mm=None, header=True, size=10.5, face=None,
               head_fill="#EAEAEA", align="LEFT", page_break="TABLE", inline=False):
         """A grid table. `rows` is a list of lists of strings.
 
-        Without `widths_mm` the columns split `text_width` evenly. With it, the
-        widths are used as given: a sum narrower than the body is a narrower
+        Without `widths_mm` (or with "auto") the body width is shared out to
+        make the table as short as it can: columns are sized to their content
+        so that the sum over rows of each row's tallest cell, in lines, is as
+        small as a local search finds — see `_auto_widths`. "equal" splits it
+        evenly, as before. With a list of mm the widths are used as given: a sum narrower than the body is a narrower
         table (place it with `align="CENTER"`), and a sum wider than the body
         raises — a table past the right margin passes every structural check
         and shows only when someone opens the file.
@@ -739,7 +857,14 @@ class HwpxBuilder:
             raise HwpxBuildError("table() needs at least one row")
         ncol = max(len(r) for r in rows)
         rows = [list(r) + [""] * (ncol - len(r)) for r in rows]
-        if widths_mm:
+        if widths_mm is None or widths_mm == "auto":
+            widths = self._auto_widths(rows, size, header)
+        elif widths_mm == "equal":
+            widths = [self.text_width // ncol] * ncol
+            widths[-1] += self.text_width - sum(widths)
+        elif isinstance(widths_mm, str):
+            raise HwpxBuildError('widths_mm is a list of mm, "auto" or "equal"')
+        else:
             if len(widths_mm) != ncol:
                 raise HwpxBuildError(
                     f"widths_mm has {len(widths_mm)} widths for {ncol} columns")
@@ -752,9 +877,6 @@ class HwpxBuilder:
                                               self.text_width / MM))
             if over > 0:
                 widths[-1] -= over
-        else:
-            widths = [self.text_width // ncol] * ncol
-            widths[-1] += self.text_width - sum(widths)
 
         grid = self.borderfill(edges=("left", "right", "top", "bottom"))
         head = self.borderfill(face_color=head_fill,
@@ -766,7 +888,13 @@ class HwpxBuilder:
             tcs = []
             for ci, val in enumerate(row):
                 bold = header and ri == 0
-                body = self._runs(val, size, bold, "#000000", face)
+                # A cell holding several lines is one paragraph per line. A
+                # single paragraph cannot break where the author meant it to:
+                # hp:t has no line break, so "\n" would print as nothing and
+                # the lines would run together with no separator at all.
+                cell = "".join(
+                    self._p(cell_pp, self._runs(ln, size, bold, "#000000", face))
+                    for ln in str(val).split("\n"))
                 tcs.append(
                     '<hp:tc name="" header="{hd}" hasMargin="0" protect="0" editable="0" '
                     'dirty="0" borderFillIDRef="{bf}">'
@@ -779,7 +907,7 @@ class HwpxBuilder:
                     '<hp:cellMargin left="510" right="510" top="141" bottom="141"/>'
                     "</hp:tc>".format(hd=1 if bold else 0,
                                       bf=head if bold else grid,
-                                      p=self._p(cell_pp, body),
+                                      p=cell,
                                       c=ci, r=ri, w=widths[ci]))
             trs.append("<hp:tr>" + "".join(tcs) + "</hp:tr>")
 
