@@ -44,7 +44,10 @@ neighbouring original on its next save, concatenating both into a single
 
 **4. Rebuild a cloned table cell as exactly one paragraph.**
 A template cell may hold several. Replace only the first and the rest survive,
-their text running straight on from the value you wrote.
+their text running straight on from the value you wrote. `fill_cell()` follows
+the same rule when it writes into an empty form cell: the cell's subList is
+rebuilt as exactly one paragraph per item you pass, whatever empty paragraphs
+the form left in it.
 
 **5. Never append to a copied archive with `ZipFile(..., "a")`.**
 zipfile appends a *second* entry under the same name rather than replacing, and
@@ -65,6 +68,8 @@ doc.append_run("공동연구 수행중", " 후속 논문 1편을 게재하였음
 doc.insert_paragraph_after("향후 계획", "신규 항목.", "231", "20", "67", color=mark)
 doc.split_run("111", "논문 ", "10", "편임. ", color=mark)   # recolour one value
 doc.add_table_row("기존 셀 텍스트", ["11", "값", ...], color=mark)
+doc.fill_cell("온라인프로그램 대체 가능 여부",       # a form: the cell beside a label
+              ["○ 대체 불가함. …", "○ 포스터 세션 …"])  # one paragraph per item
 doc.add_memo("3,500천원", "집계표의 합계와 맞지 않습니다.", author="reviewer")
 
 doc.strip_linesegarray()               # REQUIRED, last
@@ -74,6 +79,29 @@ Hwpx.verify("report_revised.hwpx", expect_memos=1)
 
 An anchor must lie inside a single `<hp:t>`. Call `runs_in()` when a match
 fails — the string probably straddles two runs.
+
+## Filling a form
+
+A form is filled, not extended: its cells exist and are empty, and what it
+needs is the cell beside a label. `fill_cell(label, text, col=1)` finds the row
+whose cell holds `label` and writes into the cell at column `col`.
+
+- **The column is the cell's `hp:cellAddr colAddr`**, not its position among
+  the row's cells, so a row with a merged cell still resolves. A cell's own
+  address is the *last* `cellAddr` inside it — any earlier one belongs to a
+  table nested in the cell — and its subList closes last for the same reason.
+- **A list is one paragraph per item**, each taking the paragraph and character
+  properties of the cell's first paragraph, so the form's own alignment and
+  face carry over.
+- **A cell that already has text is refused** unless `overwrite=True`. A form
+  is filled once; quietly replacing an answer is worse than failing.
+- Rows and cells are found by depth, not by regex: a cell can hold a table, so
+  `<hp:tr>.*?</hp:tr>` finds the wrong boundary.
+
+Confirmed in Hangul 2024 by a person (2026-11-16): a 6 × 3 form
+(「공무국외출장 관련 자료 제출」) with five cells filled, two to four `○`
+items each — opens without a dialog, every item on its own line, the form's
+justified 11 pt 맑은 고딕 kept, borders and shading unchanged.
 
 ## Memos
 

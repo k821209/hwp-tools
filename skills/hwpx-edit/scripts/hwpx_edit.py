@@ -44,6 +44,30 @@ _PARA = (
 _LINESEG_TAIL = re.compile(r"<hp:linesegarray>.*?</hp:linesegarray></hp:p>$", re.S)
 
 
+def _top_spans(s: str, open_tok: str, close_tok: str):
+    """Spans of the TOP-LEVEL `open_tok`…`close_tok` pairs in `s`.
+
+    A cell may hold another table, so `re.findall` over `<hp:tc .*?</hp:tc>`
+    would return the inner cells as if they were the row's own.
+    """
+    out, i, depth, start = [], 0, 0, 0
+    while i < len(s):
+        no, nc = s.find(open_tok, i), s.find(close_tok, i)
+        if nc < 0:
+            break
+        if 0 <= no < nc:
+            if depth == 0:
+                start = no
+            depth += 1
+            i = no + len(open_tok)
+        else:
+            depth -= 1
+            i = nc + len(close_tok)
+            if depth == 0:
+                out.append((start, i))
+    return out
+
+
 class HwpxError(RuntimeError):
     pass
 
@@ -131,19 +155,20 @@ class Hwpx:
 
     # ----------------------------------------------------------------- locate
 
-    def _para_span(self, pos):
-        """(start, end) of the INNERMOST hp:p containing `pos`.
+    def _span(self, open_tok, close_tok, pos):
+        """(start, end) of the INNERMOST `open_tok`…`close_tok` around `pos`.
 
-        hp:p nests — table cells and memo subLists each hold their own. A
-        non-greedy `<hp:p .*?</hp:p>` therefore cannot find a paragraph's
-        boundary, and taking the OUTERMOST one makes a paragraph that holds a
-        table swallow the whole table.
+        Every container in OWPML nests — a table cell holds paragraphs, a
+        paragraph can hold a table, and a cell can hold another table. So a
+        non-greedy regex cannot find any of their boundaries, and the
+        OUTERMOST match is the wrong one: it makes a paragraph that holds a
+        table swallow the whole table. This scans depth both ways.
         """
         s, depth, i = self.section, 0, pos
         while True:
-            po, pc = s.rfind("<hp:p ", 0, i), s.rfind("</hp:p>", 0, i)
+            po, pc = s.rfind(open_tok, 0, i), s.rfind(close_tok, 0, i)
             if po < 0:
-                raise HwpxError("no enclosing paragraph")
+                raise HwpxError(f"no enclosing {open_tok.strip('<> ')}")
             if pc > po:
                 depth += 1
                 i = pc
@@ -155,17 +180,21 @@ class Hwpx:
                 i = po
         depth, j = 0, a
         while True:
-            no, nc = s.find("<hp:p ", j + 1), s.find("</hp:p>", j + 1)
+            no, nc = s.find(open_tok, j + 1), s.find(close_tok, j + 1)
             if nc < 0:
-                raise HwpxError("unterminated paragraph")
+                raise HwpxError(f"unterminated {open_tok.strip('<> ')}")
             if 0 <= no < nc:
                 depth += 1
                 j = no
             elif depth == 0:
-                return a, nc + 7
+                return a, nc + len(close_tok)
             else:
                 depth -= 1
                 j = nc
+
+    def _para_span(self, pos):
+        """(start, end) of the INNERMOST hp:p containing `pos`."""
+        return self._span("<hp:p ", "</hp:p>", pos)
 
     def _find(self, needle, occurrence=0):
         pos = -1
@@ -273,6 +302,63 @@ class Hwpx:
         cnt = int(re.search(r'rowCnt="(\d+)"', s[ta:open_end]).group(1))
         s = s[:ta] + s[ta:open_end].replace(f'rowCnt="{cnt}"', f'rowCnt="{cnt + 1}"', 1) + s[open_end:]
         self.section = s
+        return self
+
+    def fill_cell(self, label, text, col=1, color=None, occurrence=0,
+                  overwrite=False):
+        """Write `text` into column `col` of the row whose label cell holds `label`.
+
+        Filling a FORM is not adding a row. The cells already exist and are
+        empty, and what a form needs is the cell BESIDE a label — which is why
+        `add_table_row` does not cover it. Pass a list for several paragraphs
+        in the one cell.
+
+        The cell is chosen by its `hp:cellAddr colAddr`, not by its position
+        among the row's cells, so a row carrying a merged cell still resolves.
+        Its subList is rebuilt as exactly ONE paragraph per item: a blank
+        template cell may already hold several empty paragraphs, and writing
+        into only the first leaves the others sitting under the text (rule 4).
+
+        Refuses a cell that already has text unless `overwrite=True` — a form
+        is filled once, and silently replacing an answer is worse than failing.
+        """
+        lines = [text] if isinstance(text, str) else list(text)
+        if not lines:
+            raise HwpxError("no text to write")
+        ra, rb = self._span("<hp:tr>", "</hp:tr>", self._find(label, occurrence))
+        row = self.section[ra:rb]
+        for ca, cb in _top_spans(row, "<hp:tc ", "</hp:tc>"):
+            # A cell's own cellAddr follows its subList, so it is the LAST one
+            # in the cell; any earlier one belongs to a table nested inside.
+            addrs = re.findall(r'<hp:cellAddr colAddr="(\d+)"', row[ca:cb])
+            if addrs and int(addrs[-1]) == col:
+                break
+        else:
+            raise HwpxError(f"the row holding {label!r} has no cell at colAddr={col}")
+        cell = row[ca:cb]
+        # The cell's own subList opens first and closes last; a nested table's
+        # cells close theirs in between.
+        sl = cell.index(">", cell.index("<hp:subList")) + 1
+        se = cell.rindex("</hp:subList>")
+        inner = cell[sl:se]
+        if not overwrite:
+            had = "".join(re.findall(r"<hp:t>(.*?)</hp:t>", inner, re.S)).strip()
+            if had:
+                raise HwpxError(
+                    f"cell at colAddr={col} is not empty ({had[:30]!r}); "
+                    "pass overwrite=True to replace it")
+        pr = re.search(r'paraPrIDRef="(\d+)" styleIDRef="(\d+)"', inner)
+        cp0 = re.search(r'<hp:run charPrIDRef="(\d+)"', inner)
+        if not (pr and cp0):
+            raise HwpxError("cell has no paragraph to copy its look from")
+        cp = self.clone_charpr(cp0.group(1), color) if color else cp0.group(1)
+        body = "".join(
+            _PARA.format(pp=pr.group(1), sid=pr.group(2),
+                         body=_RUN.format(cp=cp, t=_esc(ln)))
+                 .replace('id="2147483648"', f'id="{n}"')
+            for n, ln in enumerate(lines))
+        row = row[:ca] + cell[:sl] + body + cell[se:] + row[cb:]
+        self.section = self.section[:ra] + row + self.section[rb:]
         return self
 
     def add_memo(self, anchor, body, author="", number=None, shape_id="65535",
