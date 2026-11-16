@@ -83,7 +83,8 @@ the difference — which is how this was found, reported as a table-margin bug
 | `para(text, …)` | `hp:p` with one `hp:run` per `**bold**` / `*italic*` / `` `code` `` span |
 | `heading(level, text)` | a sized, bold paragraph (1→17 pt, 2→14, 3→13) |
 | `bullet(text)` | a `·` paragraph with a hanging indent |
-| `table(rows, widths_mm=…, align=…)` | `hp:tbl`, header row shaded; full `text_width` split evenly, or exactly `widths_mm` (wider than the body raises) |
+| `table(rows, widths_mm=…, align=…, page_break=…, inline=…)` | `hp:tbl`, header row shaded and repeated on each page; full `text_width` split evenly, or exactly `widths_mm` (wider than the body raises); splits between rows at a page boundary |
+| `page_number(pos=…, fmt=…, side_char=…, start=…)` | one `hp:pageNum` control: "- 1 -" at the foot of every page by default |
 | `image(path, width_mm=…)` | inline (`treatAsChar="1"`) PNG, aspect kept, added to `BinData/` and the `content.hpf` manifest |
 | `code(lines, lang=…)` | shaded, indented, fixed-width lines, syntax-coloured; emphasis NOT parsed |
 | `quote(text)` | shaded, indented pull-quote |
@@ -224,6 +225,47 @@ backticks (``` `` `x` `` ```) show a backtick inside. If the face is not in the
 template it falls back to the surrounding face (rule 3) and only the shade
 marks the span.
 
+## Tables across pages
+
+A table that does not fit in what is left of the page either splits or jumps,
+and which one depends on two settings. Both were measured in Hangul on long
+tables placed to straddle a page boundary.
+
+**`inline` — whether the table is a "character" (글자처럼 취급).** An inline
+table (`treatAsChar="1"`) is laid out like one tall glyph, and Hangul never
+splits it: whatever `page_break` says, it moves whole to the next page and
+leaves the rest of the page empty, and a table taller than a page has nowhere
+to go. `table()` therefore anchors the table to its paragraph and lets it flow
+with the text (`treatAsChar="0"`, `flowWithText="1"`) unless `inline=True`. An
+anchored table is placed by `horzAlign`, not by its paragraph's alignment, and
+`align=` sets that.
+
+**`page_break` — what happens at the boundary.** The OWPML names read the
+opposite way to what they suggest:
+
+| `page_break` | Hangul's name (표 → 쪽 경계에서) | measured |
+|---|---|---|
+| `"TABLE"` (default) | 나눔 | breaks between rows; no row is split |
+| `"CELL"` | 셀 단위로 나눔 | breaks inside a cell; a row's lines land on two pages |
+| `"NONE"` | 나누지 않음 | the whole table moves to the next page |
+
+`"CELL"` is what most Hangul-made tables carry (258 of 279 on this machine),
+because it is Hangul's default for a new table — copying it is how this builder
+first got it wrong. In every mode the header row repeats on each page
+(`repeatHeader="1"`). `verify()` reports `table_page_break`, the count per
+mode, since none of this shows in the XML checks or the text extract.
+
+## Page numbers
+
+`page_number()` writes one `<hp:pageNum pos="BOTTOM_CENTER" formatType="DIGIT"
+sideChar="-"/>` control beside `secPr` — "쪽 번호 매기기", the way every
+Hangul-made document on this machine numbers its pages (19 files, none with a
+master page). No header or footer is needed. `pos` is one of the bottom/top
+left/centre/right or inside/outside positions, `fmt` DIGIT, CIRCLED_DIGIT,
+ROMAN_*, LATIN_*; `start` restarts the count. `verify()` reports
+`page_numbering` — the position, or `"none"`, so a report that went out
+unnumbered says so before anyone turns twenty pages to find out.
+
 ## Footnotes
 
 Written as in markdown: a `[^id]` where the mark goes, and the text given once
@@ -324,19 +366,26 @@ And a check document (2026-11-14), opened by a person in Hangul:
 - **`table(widths_mm=…, align=…)`** — `[40, 60]` in a 160 mm body drew a
   100 mm table, left or centred as asked, and `[30, 50, 80]` drew those three
   column widths
+- **tables across pages** (2026-11-16) — anchored tables split between rows
+  with `page_break="TABLE"`, split a row's lines with `"CELL"`, moved whole
+  with `"NONE"`; inline tables moved whole whatever the setting; header rows
+  repeated; a 30-row centred table ran over three pages
+- **page numbers** — "- 1 -" … "- 6 -" at the foot of each page
 - from `markdown_chapter.py`: a hard-wrapped source paragraph comes out as one
   paragraph, a `1. ` item's continuation line lines up under the hanging
   indent, and a bold-led caption is justified
 
 ## Known unverified
 
-- **Page headers and footers.** `page()` sets the margins reserved for them;
-  writing their content needs `hp:masterPage`, which this does not do.
+- **Page header and footer text.** `page()` reserves their margins and
+  `page_number()` numbers the pages, but other content there (a running title,
+  a logo) needs `hp:header`/`hp:footer`, which this does not write.
+- **`page_number(start=…)` and the non-default positions and formats.** Only
+  the default "- N -" at the bottom centre has been looked at.
 - **A footnote longer than the space left on its page**, and several notes
   competing for one page foot. Only two short notes have been seen.
-- **Everything outside that document's shape.** Long tables broken across
-  pages, nested tables, equations and multi-section documents have not been
-  exercised.
+- **Everything outside that document's shape.** Nested tables, equations and
+  multi-section documents have not been exercised.
 
 ## Example
 

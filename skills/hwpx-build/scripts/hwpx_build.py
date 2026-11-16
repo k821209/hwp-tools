@@ -156,6 +156,7 @@ class HwpxBuilder:
         self._fn_defs: dict = {}      # footnote id → text
         self._fn_refs: list = []      # footnote id per reference, in order written
         self._fn_style = (9.5, None)
+        self._pagenum = ""            # hp:pageNum ctrl, written beside secPr
 
     # ------------------------------------------------------------- header ids
 
@@ -375,6 +376,33 @@ class HwpxBuilder:
                 t=int(round(m["top"] * MM)), b=int(round(m["bottom"] * MM))),
             self.secpr, count=1)
         self._page = (width_mm, height_mm, m)
+        return self
+
+    _PAGENUM_POS = ("BOTTOM_CENTER", "BOTTOM_LEFT", "BOTTOM_RIGHT", "TOP_CENTER",
+                    "TOP_LEFT", "TOP_RIGHT", "OUTSIDE_BOTTOM", "OUTSIDE_TOP",
+                    "INSIDE_BOTTOM", "INSIDE_TOP")
+    _PAGENUM_FMT = ("DIGIT", "CIRCLED_DIGIT", "ROMAN_CAPITAL", "ROMAN_SMALL",
+                    "LATIN_CAPITAL", "LATIN_SMALL")
+
+    def page_number(self, pos="BOTTOM_CENTER", fmt="DIGIT", side_char="-",
+                    start=None):
+        """Number the pages: "- 1 -" centred at the foot by default.
+
+        Hangul's own documents do this with one `hp:pageNum` control in the
+        first paragraph (쪽 → 쪽 번호 매기기) — no master page, header or
+        footer needed — and that is what this writes. `side_char` is drawn
+        either side of the number ("" for a bare number). `start` restarts
+        the count at that page number; None continues it (1 for a new file).
+        """
+        if pos not in self._PAGENUM_POS:
+            raise HwpxBuildError(f"pos must be one of {self._PAGENUM_POS}")
+        if fmt not in self._PAGENUM_FMT:
+            raise HwpxBuildError(f"fmt must be one of {self._PAGENUM_FMT}")
+        self._pagenum = ('<hp:ctrl><hp:pageNum pos="%s" formatType="%s" sideChar="%s"/>'
+                         '</hp:ctrl>' % (pos, fmt, _esc(side_char)))
+        if start is not None:
+            self.secpr = re.sub(r'(<hp:startNum\b[^>]*\bpage=")\d+', r"\g<1>%d" % int(start),
+                                self.secpr, count=1)
         return self
 
     def _page_geom(self) -> dict:
@@ -658,7 +686,7 @@ class HwpxBuilder:
         return self
 
     def table(self, rows, widths_mm=None, header=True, size=10.5, face=None,
-              head_fill="#EAEAEA", align="LEFT"):
+              head_fill="#EAEAEA", align="LEFT", page_break="TABLE", inline=False):
         """A grid table. `rows` is a list of lists of strings.
 
         Without `widths_mm` the columns split `text_width` evenly. With it, the
@@ -666,7 +694,22 @@ class HwpxBuilder:
         table (place it with `align="CENTER"`), and a sum wider than the body
         raises — a table past the right margin passes every structural check
         and shows only when someone opens the file.
+
+        `page_break` is what Hangul does at a page boundary (표 → 쪽 경계에서),
+        as measured in Hangul — the names read the other way round:
+        "TABLE" (나눔) breaks only between rows, so no row is split — the
+        default; "CELL" (셀 단위로 나눔) breaks inside a cell, so a row's
+        lines land on two pages; "NONE" (나누지 않음) moves the whole table to
+        the next page. The header row repeats on each page.
+
+        `inline=True` sets the table "as a character" (글자처럼 취급). Hangul
+        never splits such a table: it moves whole to the next page whatever
+        `page_break` says, and a table taller than a page has nowhere to go.
+        The default is a table anchored to its paragraph and flowing with the
+        text, which is the one `page_break` applies to.
         """
+        if page_break not in ("TABLE", "CELL", "NONE"):
+            raise HwpxBuildError('page_break must be "TABLE", "CELL" or "NONE"')
         if not rows:
             raise HwpxBuildError("table() needs at least one row")
         ncol = max(len(r) for r in rows)
@@ -718,21 +761,25 @@ class HwpxBuilder:
         self._instid += 1
         tbl = (
             '<hp:tbl id="{i}" zOrder="0" numberingType="TABLE" textWrap="TOP_AND_BOTTOM" '
-            'textFlow="BOTH_SIDES" lock="0" dropcapstyle="None" pageBreak="CELL" '
+            'textFlow="BOTH_SIDES" lock="0" dropcapstyle="None" pageBreak="{pb}" '
             'repeatHeader="1" rowCnt="{rc}" colCnt="{cc}" cellSpacing="0" '
             'borderFillIDRef="{bf}" noAdjust="0">'
             '<hp:sz width="{w}" widthRelTo="ABSOLUTE" height="2000" heightRelTo="ABSOLUTE" '
             'protect="0"/>'
-            '<hp:pos treatAsChar="1" affectLSpacing="0" flowWithText="1" allowOverlap="0" '
+            '<hp:pos treatAsChar="{tac}" affectLSpacing="0" flowWithText="1" allowOverlap="0" '
             'holdAnchorAndSO="0" vertRelTo="PARA" horzRelTo="COLUMN" vertAlign="TOP" '
-            'horzAlign="LEFT" vertOffset="0" horzOffset="0"/>'
+            'horzAlign="{ha}" vertOffset="0" horzOffset="0"/>'
             '<hp:outMargin left="0" right="0" top="0" bottom="283"/>'
             # Each hp:tc says hasMargin="0", which means "use the table's
             # inMargin", not its own cellMargin. With this at 0 the text sat
             # against the cell rule. 510/141 is what Hangul gives a new table.
             '<hp:inMargin left="510" right="510" top="141" bottom="141"/>'
             "{rows}</hp:tbl>"
-        ).format(i=self._instid, rc=len(rows), cc=ncol, bf=grid,
+        ).format(i=self._instid, rc=len(rows), cc=ncol, bf=grid, pb=page_break,
+                 tac=1 if inline else 0,
+                 # an inline table is placed by its paragraph's alignment; an
+                 # anchored one ignores that and is placed by horzAlign
+                 ha="LEFT" if inline else {"JUSTIFY": "LEFT"}.get(align, align),
                  w=sum(widths), rows="".join(trs))
 
         # A table is a control object: it lives inside an hp:run, exactly like
@@ -801,8 +848,9 @@ class HwpxBuilder:
         # secPr belongs to the FIRST paragraph's first run, not to hs:sec.
         first = self._body[0]
         cp = self.charpr()
+        pagenum = f'<hp:run charPrIDRef="{cp}">{self._pagenum}</hp:run>' if self._pagenum else ""
         first = first.replace(
-            ">", f'><hp:run charPrIDRef="{cp}">{self.secpr}{self.colpr}</hp:run>', 1)
+            ">", f'><hp:run charPrIDRef="{cp}">{self.secpr}{self.colpr}</hp:run>{pagenum}', 1)
         body = first + "".join(self._body[1:])
         if self._fn_refs:
             body = self._fill_footnotes(body)
@@ -958,6 +1006,12 @@ class HwpxBuilder:
         # the page size and margins are replaced by Hangul's defaults.
         sp = re.search(r"</hp:secPr>\s*(<hp:ctrl>\s*<hp:colPr\b)?", section)
         r["secpr_with_colpr"] = None if not sp else bool(sp.group(1))
+        # Page numbers and table page breaks are invisible to every other check
+        # here and to the text extract; say what the file asks for.
+        pn = re.search(r'<hp:pageNum\b[^>]*pos="(\w+)"', section)
+        r["page_numbering"] = pn.group(1) if pn else "none"
+        pbs = re.findall(r'<hp:tbl\b[^>]*\bpageBreak="(\w+)"', section)
+        r["table_page_break"] = {v: pbs.count(v) for v in sorted(set(pbs))}
         # A body written here carries no line cache; Hangul builds it on open.
         r["linesegarray"] = len(re.findall(r"<hp:linesegarray>", section))
         refs = set(re.findall(r'binaryItemIDRef="([^"]+)"', section))
