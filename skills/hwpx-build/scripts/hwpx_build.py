@@ -60,6 +60,11 @@ _CODE = re.compile(r"(?<!`)(`+)(?!`)(.+?)(?<!`)\1(?!`)", re.S)
 #: there), so only code points absent from the paragraph are used.
 _PUA0, _PUA1 = 0xE000, 0xF8FF
 
+#: A backslash escape, as CommonMark has it: any ASCII punctuation after a
+#: backslash is that character, not markup — `\*` is an asterisk, `\[^1]`
+#: is text, `\|` a bar inside a table cell.
+_ESCAPE = re.compile(r"\\([!-/:-@\[-`{-~])")
+
 #: A footnote reference, markdown style: [^id].
 _FNREF = re.compile(r"\[\^([^\]\s]+)\]")
 #: Where a reference sits in the body until save() knows every definition.
@@ -577,7 +582,18 @@ class HwpxBuilder:
             spans[ph] = ("fn", m.group(1))
             return ph
 
+        def hold_escape(m):
+            ph = next(free, None)
+            if ph is None:
+                return m.group(1)
+            spans[ph] = ("lit", m.group(1))
+            return ph
+
         held = _CODE.sub(hold, text) if "`" in text else text
+        # Escapes after code spans (inside one a backslash is literal), before
+        # footnotes and emphasis (so "\[^1]" and "\*" stay text).
+        if "\\" in held:
+            held = _ESCAPE.sub(hold_escape, held)
         if notes and "[^" in held:
             held = _FNREF.sub(hold_note, held)
 
@@ -622,6 +638,8 @@ class HwpxBuilder:
                         '</hp:ctrl></hp:run>'
                         % (self.charpr(size=size, bold=b, italic=i, color=color,
                                        face=face), len(self._fn_refs) - 1))
+            if kind == "lit":
+                kind = None
             if kind == "code":
                 cid = self.charpr(size=size, bold=b, italic=i, color=ccolor or color,
                                   face=cface or face, shade=cshade)

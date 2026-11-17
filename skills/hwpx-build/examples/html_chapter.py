@@ -4,6 +4,7 @@
 
     python3 html_chapter.py in.html out.hwpx [template.hwpx]
                             [--md out.md] [--number-levels]
+                            [--page-numbers] [--cover] [--toc]
 
 markdown_chapter.py reads a markdown subset written by hand. A manuscript
 kept elsewhere usually leaves as pandoc output, and pandoc's markdown does not
@@ -19,9 +20,8 @@ markdown_chapter reads, then builds with markdown_chapter.convert():
     <h1>/<h2>/<h3>      → # / ## / ###     (--number-levels: see below)
     <p>                 → paragraph; <strong>/<em>/<code> → ** / * / `
     <ul>/<ol> <li>      → "- " / "N. "      (nested lists are flattened)
-    <table>             → pipe table; <p> inside a cell is kept as cell text;
-                          a "|" in a cell becomes "｜" (markdown_chapter
-                          splits rows on every bar, escaped or not)
+    <table>             → pipe table; <p> and <br> inside a cell become
+                          line breaks in the cell; a "|" in a cell is "\\|"
     <figure>            → ![](png) + caption line; data: URIs are written out
     <figcaption>        → "**그림 N.** …" — a label repeated after itself
                           ("그림 1. 그림 1. …", as pandoc writes it when the
@@ -39,6 +39,17 @@ sub-section (###), and any other heading below <h1> a chapter (#).
 Images must be PNG — hwpx_build reads the size from the IHDR. A data: URI of
 another type, or a missing file, stops the build with the figure named,
 rather than leaving a hole that every structural check would pass.
+
+Text is escaped on the way through. The markdown in between is markup, so an
+asterisk, backtick, "[", "|" or "<" in the HTML's text is written with a
+backslash (CommonMark's escape, which hwpx_build reads back as the character),
+and a paragraph that begins like a block — "# ", "- ", "> ", "1. " — has its
+first character escaped. Without it "a*b*c" came out italic and a literal
+"[^1]" stopped the build as an undefined footnote.
+
+--cover makes a cover page from pandoc's title block (<h1 class="title">,
+.subtitle, .author, .date) or the <title>; --toc and --page-numbers are
+markdown_chapter's.
 
 --md keeps the intermediate markdown, so a diff against the source, or a
 hand edit before building, is possible.
@@ -62,6 +73,25 @@ from hwpx_build import BASE_TEMPLATE, HwpxBuilder  # noqa: E402
 SKIP = {"nav", "style", "script", "head"}
 # "그림 1. 그림 1. …" / "**표 2.** 표 2. …" — the label written twice
 DUP_LABEL = re.compile(r"^(\*\*)?(그림|표|Figure|Table)\s*(\d+)\.(\*\*)?\s*\2\s*\3\.\s*")
+
+
+# Characters that are markup in the subset; a backslash before them keeps them text.
+_INLINE = re.compile(r"([\\*`\[|<])")
+# A paragraph opening like a block would be read as that block.
+_BLOCK_START = re.compile(r"^(#|>|[-+] |\d+\.\s|!\[)")
+_CELL_BR = "\x00BR\x00"
+
+
+def escape_text(text: str) -> str:
+    return _INLINE.sub(r"\\\1", text)
+
+
+def escape_block_start(line: str) -> str:
+    m = _BLOCK_START.match(line)
+    if not m:
+        return line
+    i = m.group(1).index(".") if m.group(1)[0].isdigit() else 0   # the "." of "1."
+    return line[:i] + "\\" + line[i:]
 
 
 def dedupe_label(text: str) -> str:
@@ -95,7 +125,10 @@ class _Converter(HTMLParser):
         self.row: list[str] | None = None
         self.in_cell = False
         self.in_pre = False
+        self.in_code = False
         self.quote = 0
+        self.meta: dict = {}             # pandoc's title block, for a cover
+        self.meta_key: str | None = None
         self.fig_src: str | None = None
         self.in_fig = False
         self.images = 0
@@ -156,8 +189,9 @@ class _Converter(HTMLParser):
             self.buf.append("*")
         elif tag == "code" and not self.in_pre:
             self.buf.append("`")
+            self.in_code = True
         elif tag == "br":
-            self.buf.append("\n" if self.in_pre else " ")
+            self.buf.append("\n" if self.in_pre else _CELL_BR if self.in_cell else " ")
         elif tag == "pre":
             self.in_pre, self.buf = True, []
         elif tag in ("td", "th"):
@@ -186,8 +220,14 @@ class _Converter(HTMLParser):
             if self.in_fig:
                 self.fig_src = src
             else:                                   # a bare image in a paragraph
+                if self._has_text() and not (self.in_cell or self.lists):
+                    self._emit(escape_block_start(self._text()))   # text before it first
                 self._emit(f"![]({self._image(src)})")
         elif tag in ("p", "h1", "h2", "h3", "h4", "h5", "h6", "figcaption"):
+            cls = (a.get("class") or "").split()
+            for key in ("title", "subtitle", "author", "date"):
+                if key in cls:                       # pandoc's title block
+                    self.meta_key = key
             if not (self.in_cell or self.lists):     # <p> inside a cell/item is inline
                 self.buf = []
 
@@ -203,15 +243,17 @@ class _Converter(HTMLParser):
             self.buf.append("*")
         elif tag == "code" and not self.in_pre:
             self.buf.append("`")
+            self.in_code = False
         elif tag == "pre":
             self.in_pre = False
             code = "".join(self.buf).strip("\n")
             self.buf = []
             self._emit("```\n" + code + "\n```")
         elif tag in ("td", "th"):
-            # markdown_chapter splits a row on every "|" — an escaped "\\|"
-            # included — so a literal bar in a cell is written full-width.
-            self.row.append(self._text().replace("|", "｜"))
+            # Paragraphs and <br> in a cell are line breaks in it: "<br>" in the
+            # pipe row, which markdown_chapter turns into one paragraph per line.
+            t = self._text().replace(" " + _CELL_BR, _CELL_BR).replace(_CELL_BR + " ", _CELL_BR)
+            self.row.append(re.sub(f"({_CELL_BR})+", "<br>", t.strip(_CELL_BR)))
             self.in_cell = False
         elif tag == "tr":
             self.table.append(self.row)
@@ -241,31 +283,59 @@ class _Converter(HTMLParser):
             if self.fig_src:                        # a figure with no caption
                 self._emit(f"![]({self._image(self.fig_src)})")
             self.in_fig, self.fig_src = False, None
+        elif tag in ("h1", "h2", "h3", "h4", "h5", "h6") and self.meta_key:
+            self.meta[self.meta_key] = self._text()  # title block: kept for the cover
+            self.meta_key = None
         elif tag in ("h1", "h2", "h3", "h4", "h5", "h6"):
             t = self._text()
             if t:
                 lvl = heading_level(tag, t, self.number_levels)
                 self._emit("#" * lvl + " " + t)
+        elif tag == "p" and self.meta_key:
+            self.meta[self.meta_key] = self._text()
+            self.meta_key = None
         elif tag == "p":
-            if self.in_cell or self.lists or self.in_fig:
+            if self.in_cell:
+                self.buf.append(_CELL_BR)
+                return
+            if self.lists or self.in_fig:
                 self.buf.append(" ")
                 return
-            self._emit(dedupe_label(self._text()))
+            self._emit(escape_block_start(dedupe_label(self._text())))
 
     def handle_data(self, data):
         if not self.skip:
-            self.buf.append(data)
+            # Inside <pre> and inline <code> the text is literal already.
+            self.buf.append(data if (self.in_pre or self.in_code) else escape_text(data))
 
 
-def html_to_markdown(html_path, img_dir, number_levels=False) -> str:
+def html_to_markdown(html_path, img_dir, number_levels=False, cover=False) -> str:
+    """The subset markdown for html_path. With `cover`, a front-matter block
+    from pandoc's title block (or <title>) goes first, which markdown_chapter
+    turns into a cover page."""
     html_path = Path(html_path)
+    src = html_path.read_text(encoding="utf-8")
     c = _Converter(html_path.resolve().parent, Path(img_dir), number_levels)
-    c.feed(html_path.read_text(encoding="utf-8"))
+    c.feed(src)
     c.close()
-    return "\n\n".join(c.blocks) + "\n"
+    head = ""
+    if cover:
+        meta = dict(c.meta)
+        if not meta.get("title"):
+            import html as _html
+            m = re.search(r"<title[^>]*>(.*?)</title>", src, re.S | re.I)
+            if m:
+                meta["title"] = escape_text(_html.unescape(m.group(1)).strip())
+        if not meta.get("title"):
+            raise SystemExit("html_chapter: --cover needs a title — a pandoc title "
+                             "block or <title>")
+        keys = (("title", "title"), ("subtitle", "subtitle"), ("org", "author"), ("date", "date"))
+        head = "---\n" + "".join(f"{k}: {meta[v]}\n" for k, v in keys if meta.get(v)) + "---\n\n"
+    return head + "\n\n".join(c.blocks) + "\n"
 
 
-def convert(html_path, out_path, template=None, md_path=None, number_levels=False):
+def convert(html_path, out_path, template=None, md_path=None, number_levels=False,
+            page_numbers=False, cover=False, toc=False):
     """Build out_path from html_path; returns the HwpxBuilder, as markdown_chapter does."""
     with tempfile.TemporaryDirectory(prefix="html_chapter_") as tmp:
         # A kept markdown file must still point at its images afterwards, so
@@ -276,14 +346,18 @@ def convert(html_path, out_path, template=None, md_path=None, number_levels=Fals
             img_dir.mkdir(parents=True, exist_ok=True)
         else:
             md_file, img_dir = Path(tmp) / "chapter.md", Path(tmp)
-        md = html_to_markdown(html_path, img_dir, number_levels)
+        md = html_to_markdown(html_path, img_dir, number_levels, cover)
         md_file.write_text(md, encoding="utf-8")
-        return markdown_chapter.convert(md_file, out_path, None, template)
+        return markdown_chapter.convert(md_file, out_path, None, template,
+                                        page_numbers=page_numbers, cover=cover or None,
+                                        toc=toc)
 
 
 if __name__ == "__main__":
     args = sys.argv[1:]
     number_levels = "--number-levels" in args
+    flags = {f: f in args for f in ("--page-numbers", "--cover", "--toc")}
+    args = [a for a in args if a not in flags]
     md_out = None
     if "--md" in args:
         i = args.index("--md")
@@ -297,7 +371,9 @@ if __name__ == "__main__":
     import json
     for w in HwpxBuilder.check_template(template)["warnings"]:
         print("template:", w, file=sys.stderr)
-    b = convert(src, out, template, md_out, number_levels)
+    b = convert(src, out, template, md_out, number_levels,
+                page_numbers=flags["--page-numbers"], cover=flags["--cover"],
+                toc=flags["--toc"])
     if b.font_fallbacks:
         print("font fallbacks:", b.font_fallbacks, file=sys.stderr)
     print(json.dumps(HwpxBuilder.verify(out), ensure_ascii=False, indent=1))
