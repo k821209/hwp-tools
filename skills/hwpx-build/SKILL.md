@@ -529,3 +529,26 @@ between `---` lines) gets a cover; `--toc` adds a contents page;
 `--page-numbers` numbers the body from 1 with the cover and contents unnumbered.
 
 The template defaults to `template/base.hwpx`.
+
+`examples/html_chapter.py` — the same, from HTML. A manuscript kept elsewhere
+usually leaves through pandoc, and pandoc's *markdown* does not fit the subset
+above: a table whose cells wrap comes out as a multiline table (dashed rules,
+columns marked by spacing measured in display width), a figure as a raw
+`<figure>` block, and markdown_chapter scatters the first into body paragraphs
+and drops the second. Its *HTML* has no such ambiguity, so this reads HTML,
+writes the subset, and builds with `markdown_chapter.convert()`:
+
+```
+python3 html_chapter.py in.html out.hwpx [template.hwpx] [--md out.md] [--number-levels]
+```
+
+- `data:` images are decoded and placed; they must be PNG, and anything else
+  stops the build naming the figure rather than leaving a hole.
+- A caption whose label is repeated (`그림 1. 그림 1. …`, as pandoc writes it
+  when the caption already carries one) keeps one label.
+- `--number-levels` is for exports that put every heading below the title at
+  the same tag: `N.M …` becomes `##`, `N.M.K …` `###`, anything else `#`.
+- Nested lists are flattened, outer item first. A `|` in a table cell becomes
+  `｜`, since markdown_chapter splits a row on every bar, escaped or not.
+- `--md` keeps the intermediate markdown (images beside it), to diff or edit
+  before building.
