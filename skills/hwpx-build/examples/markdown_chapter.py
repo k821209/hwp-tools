@@ -48,6 +48,7 @@ reads, so one source produces both formats:
     text[^id]            → footnote reference, in body text or a table cell
     [^id]: text          → its definition, anywhere; indented lines continue it
     everything else      → body paragraph, **bold**, *italic* and `code` kept
+    \* \[ \| \# …         → the character itself, not markup (CommonMark escapes)
 
 A paragraph ends at a blank line or at the start of another block, as in
 markdown itself: a source wrapped at 80 columns gives one paragraph per
@@ -80,7 +81,8 @@ HEADING = re.compile(r"^(#{1,3})\s+(.*)")
 IMAGE = re.compile(r"^!\[.*?\]\((.+?)\)")
 NUMBERED = re.compile(r"^(\d+)\.\s+(.*)")
 CAPTION = re.compile(r"^(\*\*)?(그림|표)\s*\d")
-BR = re.compile(r"\s*<br\s*/?>\s*", re.I)
+BR = re.compile(r"\s*(?<!\\)<br\s*/?>\s*", re.I)
+CELL_SPLIT = re.compile(r"(?<!\\)\|")          # a bar, unless escaped as \|
 FOOTNOTE_DEF = re.compile(r"^\[\^([^\]\s]+)\]:\s*(.*)")
 
 
@@ -318,8 +320,12 @@ def convert(md_path, out_path, title=None, template=None, page_numbers=False,
             while i < len(lines) and lines[i].strip().startswith("|"):
                 # <br> is how GFM and pandoc put a line break in a pipe cell;
                 # table() makes each line its own paragraph in the cell.
-                cells = [BR.sub("\n", c.strip())
-                         for c in lines[i].strip().strip("|").split("|")]
+                # Split on bars that are not escaped: "\|" is a bar inside
+                # the cell, and the builder turns the escape back into "|".
+                row = lines[i].strip()
+                row = row[1:] if row.startswith("|") else row
+                row = row[:-1] if row.endswith("|") and not row.endswith("\\|") else row
+                cells = [BR.sub("\n", c.strip()) for c in CELL_SPLIT.split(row)]
                 if not set("".join(cells)) <= set("-: "):
                     rows.append(cells)
                 i += 1

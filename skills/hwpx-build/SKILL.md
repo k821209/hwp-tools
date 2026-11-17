@@ -134,6 +134,9 @@ called. `text_height` subtracts the header and footer areas as well as the top
 and bottom margins: Hangul's body is what is left after all four, and leaving
 out the header and footer overstates it by 30 mm at 15/15.
 
+A backslash before ASCII punctuation makes it the character itself, as in
+CommonMark: `\*`, `\[^1]`, `\|`. Inside a code span a backslash is literal.
+
 `**bold**`, `*italic*`, `` `code` `` and `[^id]` are read in `para`, `heading`,
 `bullet`, `quote` and every table cell — everything except `code()`, where
 they are syntax.
@@ -539,7 +542,8 @@ and drops the second. Its *HTML* has no such ambiguity, so this reads HTML,
 writes the subset, and builds with `markdown_chapter.convert()`:
 
 ```
-python3 html_chapter.py in.html out.hwpx [template.hwpx] [--md out.md] [--number-levels]
+python3 html_chapter.py in.html out.hwpx [template.hwpx] [--md out.md] [--number-levels] \
+        [--page-numbers] [--cover] [--toc]
 ```
 
 - `data:` images are decoded and placed; they must be PNG, and anything else
@@ -548,7 +552,15 @@ python3 html_chapter.py in.html out.hwpx [template.hwpx] [--md out.md] [--number
   when the caption already carries one) keeps one label.
 - `--number-levels` is for exports that put every heading below the title at
   the same tag: `N.M …` becomes `##`, `N.M.K …` `###`, anything else `#`.
-- Nested lists are flattened, outer item first. A `|` in a table cell becomes
-  `｜`, since markdown_chapter splits a row on every bar, escaped or not.
+- Nested lists are flattened, outer item first. Paragraphs and `<br>` inside a
+  table cell stay line breaks in the cell; a `|` in a cell is written `\|`.
+- **Text is escaped on the way through**, since the markdown in between is
+  markup: `* \` [ | <` in the HTML's text get a backslash, and a paragraph
+  that opens like a block (`# `, `- `, `> `, `1. `) has its first character
+  escaped. hwpx_build reads CommonMark escapes back as the character. Without
+  this `a*b*c` came out italic and a literal `[^1]` stopped the build.
+- `--cover` builds a cover from pandoc's title block (`h1.title`,
+  `.subtitle`, `.author`, `.date`) or `<title>`; `--toc` and
+  `--page-numbers` are markdown_chapter's.
 - `--md` keeps the intermediate markdown (images beside it), to diff or edit
   before building.
