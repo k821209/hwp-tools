@@ -259,17 +259,18 @@ def convert(md_path, out_path, title=None, template=None, page_numbers=False,
             if lvl == 1:                       # chapter — white on a solid band
                 b.para(text, size=17.0, bold=True, color=PAPER, face=body_face,
                        align="LEFT", left_mm=3, prev_pt=12, next_pt=20,
-                       fill=b.borderfill(face_color=BAND),
+                       keep_with_next=True, fill=b.borderfill(face_color=BAND),
                        border_offsets=(340, 340, 150, 150))
             elif lvl == 2:                     # section — wash plus a rule under
                 b.para(text, size=14.0, bold=True, color=INK, face=body_face,
                        align="LEFT", left_mm=2, prev_pt=22, next_pt=16,
+                       keep_with_next=True,
                        fill=b.borderfill(face_color=TINT, edges=("bottom",),
                                          width="0.4 mm", color=INK),
                        border_offsets=(283, 283, 85, 85))
             else:
                 b.para(text, size=13.0, bold=True, color=INK, face=body_face,
-                       align="LEFT", prev_pt=10, next_pt=3)
+                       align="LEFT", prev_pt=10, next_pt=3, keep_with_next=True)
             i += 1
             continue
 
@@ -358,7 +359,7 @@ def convert(md_path, out_path, title=None, template=None, page_numbers=False,
         if c and c.group(1):
             text, i = gather(lines, i, line)
             b.para(text, size=11.5, face=body_face, align="LEFT",
-                   prev_pt=8, next_pt=3)
+                   prev_pt=8, next_pt=3, keep_with_next=True)   # with its table
             continue
 
         m = re.fullmatch(r"\*\*([^*]+)\*\*", line)
@@ -368,12 +369,14 @@ def convert(md_path, out_path, title=None, template=None, page_numbers=False,
                 in_refs = True
                 b.para(text, size=14.0, bold=True, color=INK, face=body_face,
                        align="LEFT", left_mm=2, prev_pt=24, next_pt=16,
+                       keep_with_next=True,
                        fill=b.borderfill(face_color=TINT, edges=("bottom",),
                                          width="0.4 mm", color=INK),
                        border_offsets=(283, 283, 85, 85))
             else:
                 b.para(text, size=12.5, bold=True, color=INK, face=body_face,
                        align="LEFT", left_mm=2, prev_pt=11, next_pt=3,
+                       keep_with_next=True,
                        fill=b.borderfill(edges=("left",), width="0.6 mm",
                                          color=INK))
             i += 1
@@ -382,7 +385,7 @@ def convert(md_path, out_path, title=None, template=None, page_numbers=False,
         m = re.fullmatch(r"\*([^*]+)\*", line)
         if m and in_refs:
             b.para(m.group(1), size=11.0, bold=True, color=INK, face=body_face,
-                   align="LEFT", left_mm=2, prev_pt=8, next_pt=3)
+                   align="LEFT", left_mm=2, prev_pt=8, next_pt=3, keep_with_next=True)
             i += 1
             continue
 

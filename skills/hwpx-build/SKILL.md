@@ -114,14 +114,14 @@ the difference — which is how this was found, reported as a table-margin bug
 | call | produces |
 |---|---|
 | `para(text, …)` | `hp:p` with one `hp:run` per `**bold**` / `*italic*` / `` `code` `` span |
-| `heading(level, text)` | a sized, bold paragraph (1→17 pt, 2→14, 3→13) |
+| `heading(level, text)` | a sized, bold paragraph (1→17 pt, 2→14, 3→13), kept on the page of the paragraph after it |
 | `bullet(text)` | a `·` paragraph with a hanging indent |
 | `table(rows, widths_mm=…, align=…, page_break=…, inline=…)` | `hp:tbl`, header row shaded and repeated on each page; columns sized to their content to keep the table short (`"equal"` splits evenly; a list of mm is used as given, wider than the body raises); splits between rows at a page boundary |
 | `page_number(pos=…, fmt=…, side_char=…, start=…)` | one `hp:pageNum` control: "- 1 -" at the foot of every page by default |
 | `page_break()` | the next block starts a new page (`pageBreak="1"` on its paragraph) |
 | `hide_page_number()` / `restart_page_number(n)` | no number on the page the next block lands on / that page is numbered `n` (`hp:pageHiding`, `hp:newNum`) |
 | `image(path, width_mm=…)` | inline (`treatAsChar="1"`) PNG, aspect kept, added to `BinData/` and the `content.hpf` manifest |
-| `code(lines, lang=…)` | shaded, indented, fixed-width lines, syntax-coloured; emphasis NOT parsed |
+| `code(lines, lang=…)` | shaded, indented, fixed-width lines, syntax-coloured; 4 pt above the block and 8 pt below (`prev_pt`/`next_pt`); emphasis NOT parsed |
 | `quote(text)` | shaded, indented pull-quote |
 | `footnotes({id: text})` | `hp:footNote` at each `[^id]` in body text or a table cell |
 
@@ -338,6 +338,18 @@ ROMAN_*, LATIN_*; `start` restarts the count. `verify()` reports
 `page_numbering` — the position, or `"none"`, so a report that went out
 unnumbered says so before anyone turns twenty pages to find out.
 
+## Keeping a heading with its text
+
+`para(..., keep_with_next=True)` (and `parapr(keep_with_next=True)`) sets
+Hangul's "다음 문단과 함께" (`hh:breakSetting keepWithNext="1"`): the paragraph
+goes to the next page rather than end one with its text on the next.
+`heading()` sets it, and so does `markdown_chapter.py` for every heading,
+sub-heading and caption above a table. Measured on a document of 22 short
+sections built twice: without it a section heading stood alone at the foot of
+page 2, with it that heading opened page 3 with its text and no page ended on
+a heading. No Hangul-made file here sets it — 2807 paragraph shapes, all 0 —
+so this is the only evidence it works.
+
 ## Covers, contents pages, and where numbering starts
 
 `page_break()` puts the next block on a new page. `hide_page_number()` keeps the
@@ -469,6 +481,8 @@ And a check document (2026-11-14), opened by a person in Hangul:
   holding two paragraphs (a `\n` in the cell string, `<br>` in markdown)
   shows them on two lines; with the bottom gap set from the next paragraph,
   a chapter band no longer covers the table above it
+- **headings kept with their text**, and a code block clear of the table or
+  text after it (see "Keeping a heading with its text")
 - **automatic column widths** — three tables, even vs automatic: 22 → 12 and
   19 → 10 lines, headers on one line, Latin identifiers and a URL inside
   their cells; the line estimate matched 31 of 32 rows

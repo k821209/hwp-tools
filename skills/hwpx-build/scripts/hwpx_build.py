@@ -340,8 +340,12 @@ class HwpxBuilder:
     def parapr(self, align="JUSTIFY", left_mm=0.0, right_mm=0.0, first_mm=0.0,
                prev_pt=0.0, next_pt=0.0, line_spacing=160, fill=None,
                border_edges=(), border_offsets=(283, 283, 142, 142),
-               ignore_margin=True, auto_spacing=None) -> str:
+               ignore_margin=True, auto_spacing=None, keep_with_next=False) -> str:
         """Paragraph properties id.
+
+        `keep_with_next` keeps the paragraph on the same page as the one after
+        it (문단 모양 → 다음 문단과 함께) — for a heading, so it is never the
+        last line of a page with its text on the next.
 
         `first_mm` negative gives a hanging indent. `fill` shades the paragraph,
         `border_edges` is any of ("left","right","top","bottom").
@@ -360,7 +364,7 @@ class HwpxBuilder:
         """
         key = ("p", align, left_mm, right_mm, first_mm, prev_pt, next_pt,
                line_spacing, fill, tuple(border_edges), tuple(border_offsets),
-               ignore_margin, auto_spacing)
+               ignore_margin, auto_spacing, keep_with_next)
         if key in self._cache:
             return self._cache[key]
 
@@ -402,6 +406,8 @@ class HwpxBuilder:
             inner = re.sub(r"<hh:margin>.*?</hh:margin>"
                            r'<hh:lineSpacing\b[^>]*/>', margin, inner, flags=re.S)
             inner = re.sub(r"<hh:border\b[^>]*/>", border, inner, count=1)
+            inner = re.sub(r'(<hh:breakSetting\b[^>]*\bkeepWithNext=")[01]',
+                           r"\g<1>" + ("1" if keep_with_next else "0"), inner)
             if auto_spacing is not None:
                 v = "1" if auto_spacing else "0"
                 inner = re.sub(r"<hh:autoSpacing\b[^>]*/>",
@@ -731,12 +737,13 @@ class HwpxBuilder:
     def para(self, text="", size=13.0, bold=False, color="#000000", face=None,
              align="JUSTIFY", left_mm=0.0, first_mm=0.0, prev_pt=0.0, next_pt=0.0,
              line_spacing=160, fill=None, border_edges=(),
-             border_offsets=(283, 283, 142, 142), ignore_margin=True):
+             border_offsets=(283, 283, 142, 142), ignore_margin=True,
+             keep_with_next=False):
         pp = self.parapr(align=align, left_mm=left_mm, first_mm=first_mm,
                          prev_pt=prev_pt, next_pt=next_pt, line_spacing=line_spacing,
                          fill=fill, border_edges=border_edges,
                          border_offsets=border_offsets,
-                         ignore_margin=ignore_margin)
+                         ignore_margin=ignore_margin, keep_with_next=keep_with_next)
         self._body.append(self._p(pp, self._runs(text, size, bold, color, face)))
         return self
 
@@ -744,7 +751,7 @@ class HwpxBuilder:
         size = {1: 17.0, 2: 14.0, 3: 13.0}.get(level, 13.0)
         self.para(text, size=size, bold=True, face=face, align="LEFT",
                   prev_pt={1: 6, 2: 16, 3: 10}.get(level, 10),
-                  next_pt={1: 14, 2: 6, 3: 3}.get(level, 3))
+                  next_pt={1: 14, 2: 6, 3: 3}.get(level, 3), keep_with_next=True)
         return self
 
     def bullet(self, text, size=13.0, face=None, marker="· "):
@@ -752,7 +759,7 @@ class HwpxBuilder:
         return self
 
     def code(self, lines, size=10.5, face="굴림체", fill_color="#F2F2F2",
-             lang=None, theme=None):
+             lang=None, theme=None, prev_pt=4.0, next_pt=8.0):
         """A fenced code block, one paragraph per line.
 
         `lang` is "python" | "r" | "shell" | "plain", or None to guess from a
@@ -770,14 +777,20 @@ class HwpxBuilder:
         # Auto spacing off whatever the template says: with it on, Hangul adds
         # space at every Korean/Latin boundary and a fixed-width block stops
         # lining up even in a fixed-width face.
-        pp = self.parapr(align="LEFT", left_mm=3, line_spacing=130, fill=bf,
-                         auto_spacing=False)
+        # Space above the first line and below the last, none between lines:
+        # the block's own paragraphs carry it, so whatever follows — text or
+        # an anchored table, which honours the space-after of the paragraph
+        # before it — does not sit on the shading.
+        def pp_at(k, n):
+            return self.parapr(align="LEFT", left_mm=3, line_spacing=130, fill=bf,
+                               auto_spacing=False, prev_pt=prev_pt if k == 0 else 0,
+                               next_pt=next_pt if k == n - 1 else 0)
 
         if lex is None or lang == "plain":
-            for ln in lines:
+            for k, ln in enumerate(lines):
                 cp = self.charpr(size=size, face=face)
                 self._body.append(self._p(
-                    pp, '<hp:run charPrIDRef="%s"><hp:t>%s</hp:t></hp:run>'
+                    pp_at(k, len(lines)), '<hp:run charPrIDRef="%s"><hp:t>%s</hp:t></hp:run>'
                         % (cp, _esc(ln))))
             return self
 
@@ -796,7 +809,7 @@ class HwpxBuilder:
                 if part:
                     rows[-1].append((part, kind))
 
-        for row in rows:
+        for k, row in enumerate(rows):
             runs = "".join(
                 '<hp:run charPrIDRef="%s"><hp:t>%s</hp:t></hp:run>'
                 % (self.charpr(size=size, face=face,
@@ -805,7 +818,7 @@ class HwpxBuilder:
             if not runs:   # a blank line still needs a run to hold the shading
                 runs = ('<hp:run charPrIDRef="%s"><hp:t></hp:t></hp:run>'
                         % self.charpr(size=size, face=face))
-            self._body.append(self._p(pp, runs))
+            self._body.append(self._p(pp_at(k, len(rows)), runs))
         return self
 
     def quote(self, text, size=11.5, face=None, fill_color="#FFF6E5"):
