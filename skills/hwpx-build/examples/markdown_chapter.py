@@ -7,9 +7,27 @@ headings, tables, figures with captions, code blocks, pull-quotes and a
 reference list. Written for a Korean submission with a fixed typographic spec
 (A4, 13 pt, 160 % line spacing, 15/25 mm margins).
 
-    python3 markdown_chapter.py chapter.md out.hwpx "제3장 …" [template.hwpx]
+    python3 markdown_chapter.py chapter.md out.hwpx ["문서 제목"] [template.hwpx]
+                                [--page-numbers] [--cover | --no-cover] [--toc]
 
 Without a template it uses ../template/base.hwpx.
+
+A report rather than a chapter — something delivered, with a cover — starts
+with a front-matter block:
+
+    ---
+    title: AI-X 교과목 개발 결과보고서
+    subtitle: 2026학년도 2학기
+    org: 생명과학부
+    date: 2026. 11.
+    ---
+
+With a `title` there (or `--cover` and the title argument), the first page is
+a cover: the title, subtitle, organisation and date centred, no heading band.
+A first `# ` heading that repeats the title is dropped. `--toc` adds a page
+listing the `#` and `##` headings — without page numbers, which only exist
+once Hangul lays the document out. `--page-numbers` numbers the pages "- 1 -"
+at the foot; the cover and contents pages carry none, and the body starts at 1.
 
 The markdown subset it reads — the same one a matching python-docx builder
 reads, so one source produces both formats:
@@ -18,7 +36,8 @@ reads, so one source produces both formats:
     ## 절 제목           → heading 2
     **소제목**           → a bold line on its own
     **표 N. 제목**(주)   → a caption on its own line; the bold need only open it
-    | a | b |            → table (a --- separator row is required)
+    | a | b |            → table (a --- separator row is required); <br> in a
+                           cell is a line break inside it
     ![](path.png)        → image; the next line starting 그림/표 is its caption,
                            and a 그림 line after a blank line too
     ```                  → code block (fenced)
@@ -61,6 +80,7 @@ HEADING = re.compile(r"^(#{1,3})\s+(.*)")
 IMAGE = re.compile(r"^!\[.*?\]\((.+?)\)")
 NUMBERED = re.compile(r"^(\d+)\.\s+(.*)")
 CAPTION = re.compile(r"^(\*\*)?(그림|표)\s*\d")
+BR = re.compile(r"\s*<br\s*/?>\s*", re.I)
 FOOTNOTE_DEF = re.compile(r"^\[\^([^\]\s]+)\]:\s*(.*)")
 
 
@@ -121,7 +141,70 @@ def gather(lines, i, first):
     return " ".join(x for x in buf if x), i
 
 
-def convert(md_path, out_path, title=None, template=None):
+def front_matter(lines):
+    """`---` / key: value / `---` at the very top → (meta dict, remaining lines)."""
+    if not lines or lines[0].strip() != "---":
+        return {}, lines
+    for end in range(1, len(lines)):
+        if lines[end].strip() in ("---", "..."):
+            meta = {}
+            for ln in lines[1:end]:
+                k, sep, v = ln.partition(":")
+                if sep and k.strip():
+                    meta[k.strip().lower()] = v.strip().strip('"\'')
+            return meta, lines[end + 1:]
+    return {}, lines                      # no closing fence: not front matter
+
+
+def headings(lines):
+    """(level, text) of every # and ## outside fenced code."""
+    out, fenced = [], False
+    for ln in lines:
+        t = ln.strip()
+        if t.startswith("```"):
+            fenced = not fenced
+            continue
+        m = None if fenced else re.match(r"^(#{1,2})\s+(.*)", t)
+        if m:
+            out.append((len(m.group(1)), m.group(2).strip()))
+    return out
+
+
+def cover_page(b, meta, face, numbered):
+    """Title, subtitle, organisation and date, centred, on a page of their own."""
+    if numbered:
+        b.hide_page_number()
+    b.para(meta["title"], size=26.0, bold=True, color=INK, face=face, align="CENTER",
+           prev_pt=190, next_pt=10, line_spacing=140)
+    if meta.get("subtitle"):
+        b.para(meta["subtitle"], size=16.0, color=INK, face=face, align="CENTER",
+               next_pt=6)
+    tail = [meta[k] for k in ("org", "organization", "author", "date") if meta.get(k)]
+    for n, t in enumerate(tail):
+        b.para(t, size=15.0, face=face, align="CENTER",
+               prev_pt=230 if n == 0 else 0, next_pt=6)
+
+
+def contents_page(b, heads, face, numbered):
+    """The # and ## headings, indented by level. No page numbers: they do not
+    exist until Hangul lays the document out."""
+    b.page_break()
+    if numbered:
+        b.hide_page_number()
+    b.para("차    례", size=18.0, bold=True, color=INK, face=face, align="CENTER",
+           prev_pt=20, next_pt=24)
+    for lvl, text in heads:
+        if lvl == 1:
+            b.para(text, size=13.0, bold=True, face=face, align="LEFT",
+                   prev_pt=8, next_pt=2)
+        else:
+            b.para(text, size=12.0, face=face, align="LEFT", left_mm=8, next_pt=2)
+
+
+def convert(md_path, out_path, title=None, template=None, page_numbers=False,
+            cover=None, toc=False):
+    """`cover` None means "if the front matter has a title". `page_numbers` is
+    True, or a dict passed to page_number() (pos, fmt, side_char, start)."""
     md = Path(md_path).read_text(encoding="utf-8")
     base = Path(md_path).resolve().parent
 
@@ -130,9 +213,35 @@ def convert(md_path, out_path, title=None, template=None):
     body_face = BODY if BODY in b.fonts() else None
     mono_face = MONO if MONO in b.fonts() else None
 
-    lines, notes = take_footnotes(md.split("\n"))
+    meta, src = front_matter(md.split("\n"))
+    if cover is None:                     # a title in the front matter asks for one
+        cover = bool(meta.get("title"))
+    if title and not meta.get("title"):
+        meta["title"] = title
+    if cover and not meta.get("title"):
+        raise ValueError("a cover needs a title: front matter `title:` or the title argument")
+    lines, notes = take_footnotes(src)
+    if cover:                             # a first heading repeating the title goes
+        for k, ln in enumerate(lines):
+            if ln.strip():
+                m = HEADING.match(ln.strip())
+                if m and len(m.group(1)) == 1 and m.group(2).strip() == meta["title"]:
+                    del lines[k]
+                break
     if notes:
         b.footnotes(notes, size=9.5, face=body_face)
+
+    numbered = bool(page_numbers)
+    if numbered:
+        b.page_number(**(page_numbers if isinstance(page_numbers, dict) else {}))
+    if cover:
+        cover_page(b, meta, body_face, numbered)
+    if toc:
+        contents_page(b, headings(lines), body_face, numbered)
+    if cover or toc:
+        b.page_break()                    # the body starts on a page of its own
+        if numbered:
+            b.restart_page_number(1)
     i, in_refs = 0, False
     while i < len(lines):
         raw, line = lines[i], lines[i].strip()
@@ -206,7 +315,10 @@ def convert(md_path, out_path, title=None, template=None):
         if is_table_head(lines, i):
             rows = []
             while i < len(lines) and lines[i].strip().startswith("|"):
-                cells = [c.strip() for c in lines[i].strip().strip("|").split("|")]
+                # <br> is how GFM and pandoc put a line break in a pipe cell;
+                # table() makes each line its own paragraph in the cell.
+                cells = [BR.sub("\n", c.strip())
+                         for c in lines[i].strip().strip("|").split("|")]
                 if not set("".join(cells)) <= set("-: "):
                     rows.append(cells)
                 i += 1
@@ -284,17 +396,27 @@ def convert(md_path, out_path, title=None, template=None):
 
 
 if __name__ == "__main__":
-    if len(sys.argv) < 4:
-        sys.exit(__doc__.strip().split("\n\n")[2])
-    md, out, title = sys.argv[1], sys.argv[2], sys.argv[3]
-    # A template is required (rule 1); without one named, HwpxBuilder uses
-    # the blank one this skill ships.
-    from hwpx_build import BASE_TEMPLATE
-    template = sys.argv[4] if len(sys.argv) > 4 else str(BASE_TEMPLATE)
+    import argparse
     import json
-    for w in HwpxBuilder.check_template(template)["warnings"]:
+    from hwpx_build import BASE_TEMPLATE
+
+    ap = argparse.ArgumentParser(description=__doc__.strip().split("\n\n")[0])
+    ap.add_argument("md")
+    ap.add_argument("out")
+    ap.add_argument("title", nargs="?", help="cover title if the front matter has none")
+    ap.add_argument("template", nargs="?", default=str(BASE_TEMPLATE),
+                    help="a Hangul-made .hwpx (default: the shipped blank one)")
+    ap.add_argument("--page-numbers", action="store_true", help='"- 1 -" at the foot')
+    g = ap.add_mutually_exclusive_group()
+    g.add_argument("--cover", dest="cover", action="store_true", default=None)
+    g.add_argument("--no-cover", dest="cover", action="store_false")
+    ap.add_argument("--toc", action="store_true", help="a contents page of # and ## headings")
+    a = ap.parse_args()
+
+    for w in HwpxBuilder.check_template(a.template)["warnings"]:
         print("template:", w, file=sys.stderr)
-    b = convert(md, out, title, template)
+    b = convert(a.md, a.out, a.title, a.template, page_numbers=a.page_numbers,
+                cover=a.cover, toc=a.toc)
     if b.font_fallbacks:
         print("font fallbacks:", b.font_fallbacks, file=sys.stderr)
-    print(json.dumps(HwpxBuilder.verify(out), ensure_ascii=False, indent=1))
+    print(json.dumps(HwpxBuilder.verify(a.out), ensure_ascii=False, indent=1))

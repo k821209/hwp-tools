@@ -118,6 +118,8 @@ the difference — which is how this was found, reported as a table-margin bug
 | `bullet(text)` | a `·` paragraph with a hanging indent |
 | `table(rows, widths_mm=…, align=…, page_break=…, inline=…)` | `hp:tbl`, header row shaded and repeated on each page; columns sized to their content to keep the table short (`"equal"` splits evenly; a list of mm is used as given, wider than the body raises); splits between rows at a page boundary |
 | `page_number(pos=…, fmt=…, side_char=…, start=…)` | one `hp:pageNum` control: "- 1 -" at the foot of every page by default |
+| `page_break()` | the next block starts a new page (`pageBreak="1"` on its paragraph) |
+| `hide_page_number()` / `restart_page_number(n)` | no number on the page the next block lands on / that page is numbered `n` (`hp:pageHiding`, `hp:newNum`) |
 | `image(path, width_mm=…)` | inline (`treatAsChar="1"`) PNG, aspect kept, added to `BinData/` and the `content.hpf` manifest |
 | `code(lines, lang=…)` | shaded, indented, fixed-width lines, syntax-coloured; emphasis NOT parsed |
 | `quote(text)` | shaded, indented pull-quote |
@@ -308,6 +310,17 @@ opposite way to what they suggest:
 | `"CELL"` | 셀 단위로 나눔 | breaks inside a cell; a row's lines land on two pages |
 | `"NONE"` | 나누지 않음 | the whole table moves to the next page |
 
+**The space under an anchored table is the table's, not the paragraphs'.**
+Measured: under a table anchored to its paragraph, Hangul ignores both the
+next paragraph's space-before and the space-after of the paragraph holding the
+table, and leaves only the table's own bottom `outMargin`. At 1 mm a heading
+band — which reaches above its text — was painted over the table's last row.
+So at `save()` each anchored table's bottom margin is set from what the next
+paragraph asked for (its space-before, plus its shading's top offset), never
+under 3 mm: 3 mm before body text, about 5 mm before a chapter band, about 8 mm
+before a section heading. An inline table is unaffected — after one, the next
+paragraph's space-before is honoured.
+
 `"CELL"` is what most Hangul-made tables carry (258 of 279 on this machine),
 because it is Hangul's default for a new table — copying it is how this builder
 first got it wrong. In every mode the header row repeats on each page
@@ -324,6 +337,27 @@ left/centre/right or inside/outside positions, `fmt` DIGIT, CIRCLED_DIGIT,
 ROMAN_*, LATIN_*; `start` restarts the count. `verify()` reports
 `page_numbering` — the position, or `"none"`, so a report that went out
 unnumbered says so before anyone turns twenty pages to find out.
+
+## Covers, contents pages, and where numbering starts
+
+`page_break()` puts the next block on a new page. `hide_page_number()` keeps the
+number off the page the next block lands on, and `restart_page_number(1)` makes
+that page "1" — the controls Hangul itself writes after a cover. A cover and a
+contents page, then a body numbered from 1:
+
+```python
+b.page_number()
+b.hide_page_number(); b.para("보고서 제목", size=26, align="CENTER", prev_pt=190)
+b.page_break(); b.hide_page_number(); b.para("차    례", size=18, align="CENTER")
+...
+b.page_break(); b.restart_page_number(1); b.heading(1, "1. 개요")
+```
+
+A paragraph inside a table cell never takes a pending break or control: it is
+built before the paragraph that holds the table.
+
+A contents page cannot carry page numbers: they do not exist until Hangul lays
+the document out. `markdown_chapter.py --toc` lists the headings without them.
 
 ## Footnotes
 
@@ -430,6 +464,11 @@ And a check document (2026-11-14), opened by a person in Hangul:
   with `"NONE"`; inline tables moved whole whatever the setting; header rows
   repeated; a 30-row centred table ran over three pages
 - **page numbers** — "- 1 -" … "- 6 -" at the foot of each page
+- **cover, contents and numbering** (2026-11-17) — a cover and a contents
+  page with no page number, the body starting at "- 1 -"; a table cell
+  holding two paragraphs (a `\n` in the cell string, `<br>` in markdown)
+  shows them on two lines; with the bottom gap set from the next paragraph,
+  a chapter band no longer covers the table above it
 - **automatic column widths** — three tables, even vs automatic: 22 → 12 and
   19 → 10 lines, headers on one line, Latin identifiers and a URL inside
   their cells; the line estimate matched 31 of 32 rows
@@ -467,7 +506,12 @@ Two things about that subset you would otherwise learn from the output:
   under another one starts its own item at the outer level.
 
 ```
-python3 markdown_chapter.py chapter.md out.hwpx "제3장 …" [template.hwpx]
+python3 markdown_chapter.py chapter.md out.hwpx ["제목"] [template.hwpx] \
+        [--page-numbers] [--cover | --no-cover] [--toc]
 ```
+
+A report with a front-matter block (`title:`, `subtitle:`, `org:`, `date:`
+between `---` lines) gets a cover; `--toc` adds a contents page;
+`--page-numbers` numbers the body from 1 with the cover and contents unnumbered.
 
 The template defaults to `template/base.hwpx`.

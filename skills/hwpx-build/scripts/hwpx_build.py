@@ -221,6 +221,9 @@ class HwpxBuilder:
         self._fn_refs: list = []      # footnote id per reference, in order written
         self._fn_style = (9.5, None)
         self._pagenum = ""            # hp:pageNum ctrl, written beside secPr
+        self._break_next = False      # next paragraph starts a new page
+        self._ctrl_next: list = []    # controls the next paragraph carries
+        self._space_before: dict = {} # paraPr id → HWPUNIT it wants above it
         #: face asked for → the faces actually used in its place, for every
         #: face the template lacks. Hangul would substitute silently and so would this builder;
         #: this is the record that it happened.
@@ -407,6 +410,12 @@ class HwpxBuilder:
 
         pid = self._clone("paraPr", self._base_parapr, mutate)
         self._cache[key] = pid
+        # What this paragraph wants above it, shading included: a shaded box
+        # reaches `top offset` above the text. An anchored table ignores the
+        # paragraph's own space-before (see _table_gaps), so it is kept here.
+        shaded = fill is not None or bool(border_edges)
+        self._space_before[pid] = int(round(prev_pt * 100)) + (
+            int(border_offsets[2]) if shaded else 0)
         return pid
 
     def borderfill(self, face_color=None, edges=(), width="0.12 mm",
@@ -672,12 +681,50 @@ class HwpxBuilder:
                                          self._fn_defs[self._fn_refs[int(m.group(1))]]),
             xml)
 
-    def _p(self, para_pr, body, style="0") -> str:
+    # ------------------------------------------------------------- pagination
+
+    def page_break(self):
+        """Start the next block on a new page (the paragraph's pageBreak="1")."""
+        self._break_next = True
+        return self
+
+    def hide_page_number(self):
+        """No page number on the page the next block lands on — a cover, a TOC.
+
+        Hangul's own documents do it with an `hp:pageHiding` control in a
+        paragraph on that page; this puts one in the next paragraph written.
+        """
+        self._ctrl_next.append(
+            '<hp:ctrl><hp:pageHiding hideHeader="0" hideFooter="0" hideMasterPage="0" '
+            'hideBorder="0" hideFill="0" hidePageNum="1"/></hp:ctrl>')
+        return self
+
+    def restart_page_number(self, num=1):
+        """Number the page the next block lands on `num`, and count on from it.
+
+        An `hp:newNum` control, as Hangul writes after a cover so the body
+        starts at 1.
+        """
+        self._ctrl_next.append(
+            '<hp:ctrl><hp:newNum num="%d" numType="PAGE"/></hp:ctrl>' % int(num))
+        return self
+
+    def _p(self, para_pr, body, style="0", inner=False) -> str:
         # No hp:linesegarray is written. It is a layout cache keyed to text that
         # does not exist yet; Hangul builds it on open. Writing a guess is the
         # single most reliable way to have the file refused.
-        return ('<hp:p id="0" paraPrIDRef="%s" styleIDRef="%s" pageBreak="0" '
-                'columnBreak="0" merged="0">%s</hp:p>' % (para_pr, style, body))
+        # A paragraph inside a table cell is built before the paragraph that
+        # holds the table; it must not take the pending break or controls.
+        if inner:
+            return ('<hp:p id="0" paraPrIDRef="%s" styleIDRef="%s" pageBreak="0" '
+                    'columnBreak="0" merged="0">%s</hp:p>' % (para_pr, style, body))
+        brk = "1" if self._break_next else "0"
+        if self._ctrl_next:
+            body = ('<hp:run charPrIDRef="%s">%s</hp:run>'
+                    % (self.charpr(), "".join(self._ctrl_next))) + body
+        self._break_next, self._ctrl_next = False, []
+        return ('<hp:p id="0" paraPrIDRef="%s" styleIDRef="%s" pageBreak="%s" '
+                'columnBreak="0" merged="0">%s</hp:p>' % (para_pr, style, brk, body))
 
     # ---------------------------------------------------------------- blocks
 
@@ -893,7 +940,7 @@ class HwpxBuilder:
                 # hp:t has no line break, so "\n" would print as nothing and
                 # the lines would run together with no separator at all.
                 cell = "".join(
-                    self._p(cell_pp, self._runs(ln, size, bold, "#000000", face))
+                    self._p(cell_pp, self._runs(ln, size, bold, "#000000", face), inner=True)
                     for ln in str(val).split("\n"))
                 tcs.append(
                     '<hp:tc name="" header="{hd}" hasMargin="0" protect="0" editable="0" '
@@ -922,7 +969,9 @@ class HwpxBuilder:
             '<hp:pos treatAsChar="{tac}" affectLSpacing="0" flowWithText="1" allowOverlap="0" '
             'holdAnchorAndSO="0" vertRelTo="PARA" horzRelTo="COLUMN" vertAlign="TOP" '
             'horzAlign="{ha}" vertOffset="0" horzOffset="0"/>'
-            '<hp:outMargin left="0" right="0" top="0" bottom="283"/>'
+            # An anchored table's bottom outMargin is the only space Hangul
+            # leaves under it; _table_gaps() sets it from the next paragraph.
+            '<hp:outMargin left="0" right="0" top="0" bottom="{omb}"/>'
             # Each hp:tc says hasMargin="0", which means "use the table's
             # inMargin", not its own cellMargin. With this at 0 the text sat
             # against the cell rule. 510/141 is what Hangul gives a new table.
@@ -930,6 +979,7 @@ class HwpxBuilder:
             "{rows}</hp:tbl>"
         ).format(i=self._instid, rc=len(rows), cc=ncol, bf=grid, pb=page_break,
                  tac=1 if inline else 0,
+                 omb=283 if inline else "@@GAP@@",
                  # an inline table is placed by its paragraph's alignment; an
                  # anchored one ignores that and is placed by horzAlign
                  ha="LEFT" if inline else {"JUSTIFY": "LEFT"}.get(align, align),
@@ -995,16 +1045,42 @@ class HwpxBuilder:
 
     # ------------------------------------------------------------------ save
 
+    #: The least space left under an anchored table, HWPUNIT (3 mm).
+    TABLE_GAP_MIN = 850
+
+    def _table_gaps(self, parts):
+        """Fill in each anchored table's bottom outMargin.
+
+        Measured in Hangul: under a table anchored to its paragraph, the next
+        paragraph's space-before is ignored, and so is the space-after of the
+        paragraph holding the table — the only gap Hangul leaves is the
+        table's own bottom outMargin. At 1 mm a heading band, which reaches
+        above its text, was painted over the table's last row. So the gap is
+        taken from what the next paragraph asked for, never under 3 mm.
+        """
+        out = []
+        for k, part in enumerate(parts):
+            if "@@GAP@@" in part:
+                gap = self.TABLE_GAP_MIN
+                if k + 1 < len(parts):
+                    m = re.match(r'<hp:p id="0" paraPrIDRef="(\d+)"', parts[k + 1])
+                    if m:
+                        gap = max(gap, self._space_before.get(m.group(1), 0))
+                part = part.replace("@@GAP@@", str(gap))
+            out.append(part)
+        return out
+
     def _section_xml(self) -> str:
         if not self._body:
             raise HwpxBuildError("nothing to write — add at least one paragraph")
+        body_parts = self._table_gaps(self._body)
         # secPr belongs to the FIRST paragraph's first run, not to hs:sec.
-        first = self._body[0]
+        first = body_parts[0]
         cp = self.charpr()
         pagenum = f'<hp:run charPrIDRef="{cp}">{self._pagenum}</hp:run>' if self._pagenum else ""
         first = first.replace(
             ">", f'><hp:run charPrIDRef="{cp}">{self.secpr}{self.colpr}</hp:run>{pagenum}', 1)
-        body = first + "".join(self._body[1:])
+        body = first + "".join(body_parts[1:])
         if self._fn_refs:
             body = self._fill_footnotes(body)
         return _SECTION_HEAD + body + "</hs:sec>"
