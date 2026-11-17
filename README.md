@@ -73,7 +73,10 @@ to use.
 Read [`skills/hwpx-build/SKILL.md`](skills/hwpx-build/SKILL.md) — six rules,
 and a note on what has *not* been verified.
 [`examples/markdown_chapter.py`](skills/hwpx-build/examples/markdown_chapter.py)
-converts a markdown chapter, figures and all.
+converts a markdown chapter, figures and all;
+[`examples/html_chapter.py`](skills/hwpx-build/examples/html_chapter.py) does
+the same from HTML (pandoc's, say), whose tables and figures markdown_chapter
+cannot read as pandoc writes them in markdown.
 
 Also, under `hwpx-edit/`:
 - `scripts/hwpx_text.py` — `.hwpx` → body and table text, for locating anchors
