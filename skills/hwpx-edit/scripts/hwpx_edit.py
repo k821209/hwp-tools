@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import re
 import shutil
+import sys
 import xml.etree.ElementTree as ET
 import zipfile
 from pathlib import Path
@@ -32,6 +33,23 @@ __all__ = ["Hwpx", "HwpxError"]
 
 SECTION = "Contents/section0.xml"
 HEADER = "Contents/header.xml"
+HPF = "Contents/content.hpf"
+
+#: 1 mm in HWPUNIT (1/7200 inch).
+MM = 7200 / 25.4
+
+
+def _builder():
+    """hwpx_build, for the picture XML. Shared rather than copied, so a picture
+    inserted here is exactly the one hwpx-build writes and confirmed in Hangul."""
+    here = Path(__file__).resolve().parents[2] / "hwpx-build" / "scripts"
+    if str(here) not in sys.path:
+        sys.path.insert(0, str(here))
+    try:
+        import hwpx_build
+    except ImportError as e:
+        raise HwpxError(f"pictures need hwpx-build beside hwpx-edit ({here}): {e}")
+    return hwpx_build
 
 #: Colours that are rarely present in an ordinary document, offered in order.
 CANDIDATE_COLORS = ["#FF00FF", "#00B050", "#7030A0", "#00B0F0", "#E36C0A", "#C00000"]
@@ -86,6 +104,9 @@ class Hwpx:
                     raise HwpxError(f"{self.src.name}: {part} missing — not a .hwpx?")
             self.section = z.read(SECTION).decode("utf-8")
             self.header = z.read(HEADER).decode("utf-8")
+            self.hpf = z.read(HPF).decode("utf-8") if HPF in names else None
+            self._names = names
+        self._new_bins: list[tuple[str, Path]] = []   # (item id, png) added this session
         self._clones: dict[tuple[str, str], str] = {}
         self._new_charpr: list[str] = []
         self._marked: set[str] = set()  # charPr ids this session created
@@ -361,6 +382,109 @@ class Hwpx:
         self.section = self.section[:ra] + row + self.section[rb:]
         return self
 
+    # --------------------------------------------------------------- pictures
+
+    def _next_item_id(self) -> str:
+        """An `imageN` id no BinData file or manifest item already uses."""
+        used = set(re.findall(r'<opf:item id="([^"]+)"', self.hpf or ""))
+        used |= {Path(n).stem for n in self._names if n.startswith("BinData/")}
+        used |= {i for i, _ in self._new_bins}
+        n = 1 + max((int(m.group(1)) for u in used
+                     for m in [re.fullmatch(r"image(\d+)", u)] if m), default=0)
+        return f"image{n}"
+
+    def _next_inst_id(self) -> int:
+        """One above every object id and instid in the section.
+
+        Hangul gives each table, picture and control a large id of its own; a
+        duplicate passes every check here and is the kind of thing Hangul
+        resolves by dropping one of the two.
+        """
+        # Object ids only: a paragraph's id is a different counter, and new
+        # paragraphs carry 2147483648 (2^31), which would push the maximum
+        # out of range.
+        ids = {int(x) for x in re.findall(
+            r'<hp:(?!p\b)\w+\b[^>]*?\b(?:id|instid|instId)="(\d+)"', self.section)}
+        ids = {i for i in ids if i < 2 ** 31 - 1}
+        n = max(ids, default=1000000) + 1
+        while n >= 2 ** 31 - 1 or n in ids:      # at the top of the range: find a gap
+            n = (n + 7919) % (2 ** 31 - 1) or 1000000
+        return n
+
+    def _pic_run(self, png, width_mm, char_pr) -> str:
+        hb = _builder()
+        if self.hpf is None:
+            raise HwpxError(f"{self.src.name}: no {HPF} to register a picture in")
+        png = Path(png)
+        if not png.exists():
+            raise HwpxError(f"image not found: {png}")
+        px_w, px_h = hb.png_size(png)          # raises on anything but PNG
+        w = int(round(width_mm * MM))
+        h = int(round(w * px_h / px_w))
+        item = self._next_item_id()
+        self._new_bins.append((item, png))
+        pic = hb.pic_xml(self._next_inst_id(), item, w, h, png.name)
+        return f'<hp:run charPrIDRef="{char_pr}">{pic}</hp:run>'   # rule 4: in a run
+
+    def insert_image_after(self, needle, png, width_mm=120, para_pr=None,
+                           style_id=None, char_pr=None, occurrence=0):
+        """Put a PNG in a new paragraph after the one holding `needle`.
+
+        Inside a table cell the paragraph goes into that cell. Its paragraph,
+        style and character properties are the anchor paragraph's unless given
+        — pass the paraPr of a centred paragraph to centre the picture. The
+        image file and its manifest entry are written by save().
+        """
+        a, b = self._para_span(self._find(needle, occurrence))
+        anchor = self.section[a:b]
+        m = re.match(r'<hp:p\b[^>]*paraPrIDRef="(\d+)"[^>]*styleIDRef="(\d+)"', anchor)
+        cp = re.search(r'<hp:run charPrIDRef="(\d+)"', anchor)
+        pp = para_pr or (m.group(1) if m else "0")
+        sid = style_id or (m.group(2) if m else "0")
+        run = self._pic_run(png, width_mm, char_pr or (cp.group(1) if cp else "0"))
+        self.section = self.section[:b] + _PARA.format(pp=pp, sid=sid, body=run) + self.section[b:]
+        return self
+
+    def fill_cell_image(self, label, png, col=1, width_mm=None, occurrence=0,
+                        overwrite=False):
+        """Put a PNG into column `col` of the row whose label cell holds `label`.
+
+        The form-filling counterpart of fill_cell(): the cell is chosen by its
+        colAddr, refused if it already has text unless `overwrite`, and its
+        subList rebuilt as one paragraph holding the picture. Without
+        `width_mm` the picture is as wide as the cell inside its margins.
+        """
+        ra, rb = self._span("<hp:tr>", "</hp:tr>", self._find(label, occurrence))
+        row = self.section[ra:rb]
+        for ca, cb in _top_spans(row, "<hp:tc ", "</hp:tc>"):
+            addrs = re.findall(r'<hp:cellAddr colAddr="(\d+)"', row[ca:cb])
+            if addrs and int(addrs[-1]) == col:
+                break
+        else:
+            raise HwpxError(f"the row holding {label!r} has no cell at colAddr={col}")
+        cell = row[ca:cb]
+        sl = cell.index(">", cell.index("<hp:subList")) + 1
+        se = cell.rindex("</hp:subList>")
+        inner = cell[sl:se]
+        if not overwrite:
+            had = "".join(re.findall(r"<hp:t>(.*?)</hp:t>", inner, re.S)).strip()
+            if had or "<hp:pic" in inner:
+                raise HwpxError(f"cell at colAddr={col} is not empty; pass overwrite=True")
+        pr = re.search(r'paraPrIDRef="(\d+)" styleIDRef="(\d+)"', inner)
+        cp0 = re.search(r'<hp:run charPrIDRef="(\d+)"', inner)
+        if not (pr and cp0):
+            raise HwpxError("cell has no paragraph to copy its look from")
+        if width_mm is None:
+            cw = int(re.findall(r'<hp:cellSz width="(\d+)"', cell)[-1])
+            mg = re.findall(r'<hp:cellMargin left="(\d+)" right="(\d+)"', cell)
+            pad = sum(map(int, mg[-1])) if mg else 1020
+            width_mm = max(cw - pad - 100, 100) / MM    # 100 HU short of the margin
+        run = self._pic_run(png, width_mm, cp0.group(1))
+        body = _PARA.format(pp=pr.group(1), sid=pr.group(2), body=run)
+        row = row[:ca] + cell[:sl] + body + cell[se:] + row[cb:]
+        self.section = self.section[:ra] + row + self.section[rb:]
+        return self
+
     def add_memo(self, anchor, body, author="", number=None, shape_id="65535",
                  created="2026-01-01T00:00:00Z"):
         """Attach a margin memo to `anchor`.
@@ -462,11 +586,23 @@ class Hwpx:
             self._new_charpr = []
         replaced = {SECTION: self.section.encode("utf-8"),
                     HEADER: self.header.encode("utf-8")}
+        # Pictures added this session: their files and manifest entries go in
+        # the same rewrite, never in a second pass over the saved archive.
+        if self._new_bins:
+            items = "".join(
+                f'<opf:item id="{i}" href="BinData/{i}.png" media-type="image/png" '
+                'isEmbeded="1"/>' for i, _ in self._new_bins)
+            self.hpf = self.hpf.replace("</opf:manifest>", items + "</opf:manifest>", 1)
+            replaced[HPF] = self.hpf.encode("utf-8")
         with zipfile.ZipFile(self.src) as zin, \
                 zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED) as zout:
             for info in zin.infolist():
                 data = replaced.get(info.filename)
                 zout.writestr(info, zin.read(info.filename) if data is None else data)
+            for i, png in self._new_bins:
+                zout.writestr(f"BinData/{i}.png", png.read_bytes())
+        self._names |= {f"BinData/{i}.png" for i, _ in self._new_bins}
+        self._new_bins = []
         return out
 
     @staticmethod
@@ -479,12 +615,13 @@ class Hwpx:
         path = Path(path)
         r = {"zip_ok": None, "xml_ok": None, "charpr_count_match": None,
              "charpr_dup_ids": None, "stale_linesegarray": None, "memos": None,
-             "opens_in_hangul": None}
+             "images": None, "opens_in_hangul": None}
         with zipfile.ZipFile(path) as z:
             r["zip_ok"] = z.testzip() is None
             names = z.namelist()
             section = z.read(SECTION).decode("utf-8")
             header = z.read(HEADER).decode("utf-8")
+            hpf = z.read(HPF).decode("utf-8") if HPF in names else ""
             try:
                 ET.fromstring(section.encode())
                 ET.fromstring(header.encode())
@@ -515,6 +652,23 @@ class Hwpx:
                 stale += 1
         r["stale_linesegarray"] = stale
         r["duplicate_zip_entries"] = len(names) - len(set(names))
+        # Pictures: the file, its manifest item and the body's reference are
+        # three separate things, and a picture missing any one of them passes
+        # every other check here and fails only in Hangul.
+        files = {n for n in names if n.startswith("BinData/")}
+        manifest = dict(re.findall(r'<opf:item id="([^"]+)" href="(BinData/[^"]+)"', hpf))
+        refs = set(re.findall(r'binaryItemIDRef="([^"]+)"', section))
+        r["images"] = {
+            "files": len(files), "manifest": len(manifest), "referenced": len(refs),
+            "pictures": len(re.findall(r"<hp:pic\b", section)),
+            "ref_not_in_manifest": sorted(refs - set(manifest)),
+            "manifest_without_file": sorted(i for i, h in manifest.items() if h not in files),
+            "pic_outside_run": len(re.findall(r"<hp:pic\b", section))
+                               - len(re.findall(r"<hp:run[^>]*><hp:pic\b", section)),
+        }
+        r["images"]["ok"] = not (r["images"]["ref_not_in_manifest"]
+                                 or r["images"]["manifest_without_file"]
+                                 or r["images"]["pic_outside_run"])
         return r
 
 

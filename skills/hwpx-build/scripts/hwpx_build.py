@@ -37,7 +37,7 @@ import xml.etree.ElementTree as ET
 import zipfile
 from pathlib import Path
 
-__all__ = ["HwpxBuilder", "HwpxBuildError", "mono_cols"]
+__all__ = ["HwpxBuilder", "HwpxBuildError", "mono_cols", "pic_xml", "png_size"]
 
 SECTION = "Contents/section0.xml"
 HEADER = "Contents/header.xml"
@@ -64,6 +64,11 @@ _PUA0, _PUA1 = 0xE000, 0xF8FF
 #: backslash is that character, not markup — `\*` is an asterisk, `\[^1]`
 #: is text, `\|` a bar inside a table cell.
 _ESCAPE = re.compile(r"\\([!-/:-@\[-`{-~])")
+
+#: Superscript and subscript, written as the HTML tags: `x<sup>2</sup>`,
+#: `H<sub>2</sub>O`. Not pandoc's ^…^ / ~…~ — in Korean text "~" marks a range
+#: (1~8권, 2018~2025), and two ranges in a paragraph pair up into a subscript.
+_SCRIPT = re.compile(r"<(sup|sub)>(.+?)</\1>", re.S)
 
 #: A footnote reference, markdown style: [^id].
 _FNREF = re.compile(r"\[\^([^\]\s]+)\]")
@@ -107,7 +112,7 @@ def mono_cols(text: str) -> int:
     return sum(1 if ord(c) < 128 else 2 for c in text)
 
 
-_MARKUP = re.compile(r"\*\*|(?<!\*)\*(?!\*)|`")
+_MARKUP = re.compile(r"\*\*|(?<!\*)\*(?!\*)|`|</?su[bp]>")
 
 
 def _glyph_em(c: str) -> float:
@@ -166,6 +171,49 @@ def _cell_lines(text: str, cap_em: float, bold: bool = False) -> int:
 def _esc(s: str) -> str:
     return (s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
              .replace('"', "&quot;"))
+
+
+def png_size(path) -> tuple:
+    """(width, height) in pixels, from the PNG IHDR. No Pillow needed."""
+    return _png_size(Path(path))
+
+
+def pic_xml(inst: int, item: str, w: int, h: int, name: str) -> str:
+    """An inline (treatAsChar) `hp:pic` showing BinData item `item` at w×h HWPUNIT.
+
+    It must go inside an `hp:run` (rule 4). hwpx_edit uses this too, so a
+    picture inserted into an existing document is the one built here.
+    """
+    return (
+        '<hp:pic id="{i}" zOrder="0" numberingType="PICTURE" '
+        'textWrap="TOP_AND_BOTTOM" textFlow="BOTH_SIDES" lock="0" '
+        'dropcapstyle="None" href="" groupLevel="0" instid="{i}" reverse="0">'
+        '<hp:offset x="0" y="0"/>'
+        '<hp:orgSz width="{w}" height="{h}"/>'
+        '<hp:curSz width="{w}" height="{h}"/>'
+        '<hp:flip horizontal="0" vertical="0"/>'
+        '<hp:rotationInfo angle="0" centerX="{cx}" centerY="{cy}" rotateimage="1"/>'
+        "<hp:renderingInfo>"
+        '<hc:transMatrix e1="1" e2="0" e3="0" e4="0" e5="1" e6="0"/>'
+        '<hc:scaMatrix e1="1" e2="0" e3="0" e4="0" e5="1" e6="0"/>'
+        '<hc:rotMatrix e1="1" e2="0" e3="0" e4="0" e5="1" e6="0"/>'
+        "</hp:renderingInfo>"
+        '<hc:img binaryItemIDRef="{item}" bright="0" contrast="0" effect="REAL_PIC" alpha="0"/>'
+        '<hp:imgRect><hc:pt0 x="0" y="0"/><hc:pt1 x="{w}" y="0"/>'
+        '<hc:pt2 x="{w}" y="{h}"/><hc:pt3 x="0" y="{h}"/></hp:imgRect>'
+        '<hp:imgClip left="0" right="{w}" top="0" bottom="{h}"/>'
+        '<hp:inMargin left="0" right="0" top="0" bottom="0"/>'
+        '<hp:imgDim dimwidth="{w}" dimheight="{h}"/>'
+        "<hp:effects/>"
+        '<hp:sz width="{w}" widthRelTo="ABSOLUTE" height="{h}" heightRelTo="ABSOLUTE" '
+        'protect="0"/>'
+        '<hp:pos treatAsChar="1" affectLSpacing="0" flowWithText="1" allowOverlap="0" '
+        'holdAnchorAndSO="0" vertRelTo="PARA" horzRelTo="COLUMN" vertAlign="TOP" '
+        'horzAlign="LEFT" vertOffset="0" horzOffset="0"/>'
+        '<hp:outMargin left="0" right="0" top="0" bottom="0"/>'
+        "<hp:shapeComment>그림입니다. 원본 그림의 이름: {name}</hp:shapeComment>"
+        "</hp:pic>"
+    ).format(i=inst, w=w, h=h, cx=w // 2, cy=h // 2, item=item, name=_esc(name))
 
 
 def _png_size(path: Path):
@@ -305,14 +353,18 @@ class HwpxBuilder:
         return tag[:-1].rstrip("/") + f' {name}="{value}"' + ("/>" if tag.endswith("/>") else ">")
 
     def charpr(self, size=13.0, bold=False, italic=False, color="#000000",
-               face=None, fill=None, shade=None) -> str:
+               face=None, fill=None, shade=None, script=None) -> str:
         """Character properties id. Cloned from the template's first charPr.
 
         `size` in points, `face` a font name from `fonts()`, `fill` a
         borderFill id for character borders/background, `shade` a colour for
-        the character shade (Hangul's 글자 모양 → 음영 색).
+        the character shade (Hangul's 글자 모양 → 음영 색), `script` "sup" or
+        "sub" for 위 첨자 / 아래 첨자 (`<hh:supscript/>` / `<hh:subscript/>`,
+        last in the charPr, where Hangul writes them).
         """
-        key = ("c", size, bold, italic, color.upper(), face, fill, shade)
+        if script not in (None, "sup", "sub"):
+            raise HwpxBuildError('script is "sup", "sub" or None')
+        key = ("c", size, bold, italic, color.upper(), face, fill, shade, script)
         if key in self._cache:
             return self._cache[key]
 
@@ -336,6 +388,9 @@ class HwpxBuilder:
                     inner = inner.replace("<hh:underline", mark + "<hh:underline", 1)
                 else:
                     inner += mark
+            inner = inner.replace("<hh:supscript/>", "").replace("<hh:subscript/>", "")
+            if script:
+                inner += "<hh:%sscript/>" % script
             return tag, inner
 
         cid = self._clone("charPr", self._base_charpr, mutate)
@@ -594,6 +649,16 @@ class HwpxBuilder:
         # footnotes and emphasis (so "\[^1]" and "\*" stay text).
         if "\\" in held:
             held = _ESCAPE.sub(hold_escape, held)
+
+        def hold_script(m):
+            ph = next(free, None)
+            if ph is None:
+                return m.group(0)
+            spans[ph] = (m.group(1), m.group(2))
+            return ph
+
+        if "<su" in held:
+            held = _SCRIPT.sub(hold_script, held)
         if notes and "[^" in held:
             held = _FNREF.sub(hold_note, held)
 
@@ -640,6 +705,10 @@ class HwpxBuilder:
                                        face=face), len(self._fn_refs) - 1))
             if kind == "lit":
                 kind = None
+            if kind in ("sup", "sub"):
+                cid = self.charpr(size=size, bold=b, italic=i, color=color, face=face,
+                                  script=kind)
+                return '<hp:run charPrIDRef="%s"><hp:t>%s</hp:t></hp:run>' % (cid, _esc(t))
             if kind == "code":
                 cid = self.charpr(size=size, bold=b, italic=i, color=ccolor or color,
                                   face=cface or face, shade=cshade)
@@ -1037,37 +1106,7 @@ class HwpxBuilder:
         self._images.append((item, p))
         self._instid += 1
 
-        pic = (
-            '<hp:pic id="{i}" zOrder="0" numberingType="PICTURE" '
-            'textWrap="TOP_AND_BOTTOM" textFlow="BOTH_SIDES" lock="0" '
-            'dropcapstyle="None" href="" groupLevel="0" instid="{i}" reverse="0">'
-            '<hp:offset x="0" y="0"/>'
-            '<hp:orgSz width="{w}" height="{h}"/>'
-            '<hp:curSz width="{w}" height="{h}"/>'
-            '<hp:flip horizontal="0" vertical="0"/>'
-            '<hp:rotationInfo angle="0" centerX="{cx}" centerY="{cy}" rotateimage="1"/>'
-            "<hp:renderingInfo>"
-            '<hc:transMatrix e1="1" e2="0" e3="0" e4="0" e5="1" e6="0"/>'
-            '<hc:scaMatrix e1="1" e2="0" e3="0" e4="0" e5="1" e6="0"/>'
-            '<hc:rotMatrix e1="1" e2="0" e3="0" e4="0" e5="1" e6="0"/>'
-            "</hp:renderingInfo>"
-            '<hc:img binaryItemIDRef="{item}" bright="0" contrast="0" effect="REAL_PIC" alpha="0"/>'
-            '<hp:imgRect><hc:pt0 x="0" y="0"/><hc:pt1 x="{w}" y="0"/>'
-            '<hc:pt2 x="{w}" y="{h}"/><hc:pt3 x="0" y="{h}"/></hp:imgRect>'
-            '<hp:imgClip left="0" right="{w}" top="0" bottom="{h}"/>'
-            '<hp:inMargin left="0" right="0" top="0" bottom="0"/>'
-            '<hp:imgDim dimwidth="{w}" dimheight="{h}"/>'
-            "<hp:effects/>"
-            '<hp:sz width="{w}" widthRelTo="ABSOLUTE" height="{h}" heightRelTo="ABSOLUTE" '
-            'protect="0"/>'
-            '<hp:pos treatAsChar="1" affectLSpacing="0" flowWithText="1" allowOverlap="0" '
-            'holdAnchorAndSO="0" vertRelTo="PARA" horzRelTo="COLUMN" vertAlign="TOP" '
-            'horzAlign="LEFT" vertOffset="0" horzOffset="0"/>'
-            '<hp:outMargin left="0" right="0" top="0" bottom="0"/>'
-            "<hp:shapeComment>그림입니다. 원본 그림의 이름: {name}</hp:shapeComment>"
-            "</hp:pic>"
-        ).format(i=self._instid, w=w, h=h, cx=w // 2, cy=h // 2,
-                 item=item, name=_esc(p.name))
+        pic = pic_xml(self._instid, item, w, h, p.name)
 
         pp = self.parapr(align=align, prev_pt=prev_pt)
         cp = self.charpr()

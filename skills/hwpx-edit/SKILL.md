@@ -70,6 +70,8 @@ doc.split_run("111", "논문 ", "10", "편임. ", color=mark)   # recolour one v
 doc.add_table_row("기존 셀 텍스트", ["11", "값", ...], color=mark)
 doc.fill_cell("온라인프로그램 대체 가능 여부",       # a form: the cell beside a label
               ["○ 대체 불가함. …", "○ 포스터 세션 …"])  # one paragraph per item
+doc.insert_image_after("결과 요약", "fig1.png", width_mm=150)   # a picture after a paragraph
+doc.fill_cell_image("첨부 그림", "fig2.png", col=1)             # an empty cell, at its width
 doc.add_memo("3,500천원", "집계표의 합계와 맞지 않습니다.", author="reviewer")
 
 doc.strip_linesegarray()               # REQUIRED, last
@@ -103,6 +105,41 @@ Confirmed in Hangul 2024 by a person (2026-11-16): a 6 × 3 form
 items each — opens without a dialog, every item on its own line, the form's
 justified 11 pt 맑은 고딕 kept, borders and shading unchanged.
 
+## Pictures
+
+`insert_image_after(needle, png, width_mm=…)` puts a PNG in a new paragraph
+after the one holding `needle` — inside a table cell if that paragraph is in
+one — taking the anchor's paragraph, style and character properties unless
+given (pass a centred paragraph's `para_pr` to centre it).
+`fill_cell_image(label, png, col=…)` is fill_cell() for a picture: the cell is
+found by `colAddr`, refused if it has text or a picture unless `overwrite`, and
+the picture is as wide as the cell inside its margins unless `width_mm` says.
+
+A picture is three things, and these keep them together:
+
+- **the `hp:pic`**, inside an `hp:run` (hwpx-build's rule 4) — the same XML
+  `hwpx_build.pic_xml()` writes, imported rather than copied, so hwpx-build has
+  to sit beside hwpx-edit;
+- **the file, `BinData/imageN.png`**, with an id no existing item uses (a form
+  with `image1`–`image4` gets `image5`);
+- **the manifest item in `Contents/content.hpf`**.
+
+`save()` writes the files and the manifest in the same rewrite as the section,
+so nothing has to reopen the saved archive — which is where rule 5's
+`ZipFile(..., "a")` failure waits. Each picture's object id is one above every
+object id in the section; Hangul's own are large and a duplicate is the kind of
+thing it resolves by dropping one. PNG only — the size is read from the IHDR.
+
+`verify()` reports `images`: files, manifest items, referenced ids, pictures,
+any reference not in the manifest, any manifest item without its file, any
+picture outside a run, and `ok`. A picture missing one of its three parts
+passes every other check here.
+
+Confirmed in Hangul 2024 by a person (2026-11-22): a 2:1 PNG put after a body
+paragraph, under the text in a table cell, and into an empty merged cell at the
+cell's width — the form opened without a dialog, all three at the right
+proportions, the tables intact.
+
 ## Memos
 
 A memo is not an `hp:memo` element. It is `hp:fieldBegin type="MEMO"` carrying
@@ -115,7 +152,8 @@ paragraph uses `paraPrIDRef=44 / styleIDRef=13 ("메모") / charPrIDRef=64`.
 
 `Hwpx.verify()` checks: zip integrity, both XML parse, `charProperties itemCnt`
 against the real count, duplicate charPr ids, duplicate zip entries, memo
-field/end pairing, and stale `linesegarray` on memo paragraphs. Diff the
+field/end pairing, stale `linesegarray` on memo paragraphs, and that every
+picture has its file, its manifest item and a run around it. Diff the
 extracted text against a baseline too — `scripts/hwpx_text.py` renders body and
 tables, so `diff` shows exactly which lines moved.
 
@@ -130,8 +168,8 @@ opens".
 
 - `scripts/hwpx_text.py` — `.hwpx` → body and table text (tables as pipe rows).
   For locating anchors and as a diff baseline. Also runnable: `hwpx_text.py f.hwpx`.
-  `--with-style` prefixes each paragraph and cell with its size, face and
-  weight (`[13.0pt 함초롬바탕]`) and puts footnotes on their own lines, so an
+  `--with-style` prefixes each paragraph and cell with its size, face,
+  weight and super/subscript (`[13.0pt 함초롬바탕]`) and puts footnotes on their own lines, so an
   edit that changed formatting but not text shows up in the diff. Without the
   flag the output is byte-for-byte what it was.
 - `scripts/hwp5_text.py` — `.hwp` 5.x → text (olefile + zlib, `HWPTAG_PARA_TEXT`).

@@ -137,6 +137,12 @@ out the header and footer overstates it by 30 mm at 15/15.
 A backslash before ASCII punctuation makes it the character itself, as in
 CommonMark: `\*`, `\[^1]`, `\|`. Inside a code span a backslash is literal.
 
+Superscript and subscript are written as the HTML tags — `x<sup>2</sup>`,
+`H<sub>2</sub>O` — and set with `<hh:supscript/>` / `<hh:subscript/>` in the
+character shape (`charpr(script="sup"|"sub")`). Not pandoc's `^…^` / `~…~`:
+Korean marks ranges with "~" (1~8권, 2018~2025), and two in one paragraph
+would pair into a subscript.
+
 `**bold**`, `*italic*`, `` `code` `` and `[^id]` are read in `para`, `heading`,
 `bullet`, `quote` and every table cell — everything except `code()`, where
 they are syntax.
@@ -484,6 +490,8 @@ And a check document (2026-11-14), opened by a person in Hangul:
   holding two paragraphs (a `\n` in the cell string, `<br>` in markdown)
   shows them on two lines; with the bottom gap set from the next paragraph,
   a chapter band no longer covers the table above it
+- **superscript and subscript** (2026-11-22) — H₂O, CO₂, x², 10⁻³ from
+  pandoc HTML; the "~" ranges pandoc had made into a subscript restored
 - **headings kept with their text**, and a code block clear of the table or
   text after it (see "Keeping a heading with its text")
 - **automatic column widths** — three tables, even vs automatic: 22 → 12 and
@@ -559,6 +567,13 @@ python3 html_chapter.py in.html out.hwpx [template.hwpx] [--md out.md] [--number
   that opens like a block (`# `, `- `, `> `, `1. `) has its first character
   escaped. hwpx_build reads CommonMark escapes back as the character. Without
   this `a*b*c` came out italic and a literal `[^1]` stopped the build.
+- **pandoc turns two "~" ranges into a subscript** (`337~368호(2017~2025)` →
+  `337<sub>368호(2017</sub>2025)`, both tildes gone, and every check passes
+  because the HTML has lost them already — #19). A `<sub>` holding a space,
+  a Hangul syllable or a bracket is taken for that and put back as `~…~`,
+  each one reported on stderr; other `<sub>`/`<sup>` stay real scripts.
+  At the source, export with `pandoc -f markdown-subscript`, or write ranges
+  as `∼` (U+223C) or `\~`.
 - `--cover` builds a cover from pandoc's title block (`h1.title`,
   `.subtitle`, `.author`, `.date`) or `<title>`; `--toc` and
   `--page-numbers` are markdown_chapter's.

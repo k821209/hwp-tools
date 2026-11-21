@@ -59,12 +59,17 @@ class Styles:
             size = int(cp.get('height', '0')) / 100
             face = '?'
             bold = False
+            script = ''
             for ch in cp:
                 if local(ch.tag) == 'fontRef':
                     face = faces.get(ch.get('hangul'), '?')
                 elif local(ch.tag) == 'bold':
                     bold = True
-            self.label[cp.get('id')] = '%.1fpt %s%s' % (size, face, ' 굵게' if bold else '')
+                elif local(ch.tag) == 'supscript':
+                    script = ' 위첨자'
+                elif local(ch.tag) == 'subscript':
+                    script = ' 아래첨자'
+            self.label[cp.get('id')] = '%.1fpt %s%s%s' % (size, face, ' 굵게' if bold else '', script)
 
     def of(self, runs):
         seen = []

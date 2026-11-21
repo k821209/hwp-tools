@@ -27,6 +27,10 @@ markdown_chapter reads, then builds with markdown_chapter.convert():
                           ("그림 1. 그림 1. …", as pandoc writes it when the
                           caption already carries the label) is dropped
     "표 N." paragraph    → the same de-duplication, so it stays a caption
+    <sup>/<sub>         → <sup>…</sup> / <sub>…</sub>, which hwpx_build sets as
+                          위/아래 첨자 — except a <sub> holding a space, Hangul or
+                          a bracket, which is pandoc's reading of two "~" ranges
+                          and is put back as "~…~" with a warning (see below)
     <pre>               → fenced code block, whitespace kept
     <blockquote>        → "> " quote
     <nav>, <style>, <script>, <head> → skipped
@@ -46,6 +50,15 @@ backslash (CommonMark's escape, which hwpx_build reads back as the character),
 and a paragraph that begins like a block — "# ", "- ", "> ", "1. " — has its
 first character escaped. Without it "a*b*c" came out italic and a literal
 "[^1]" stopped the build as an undefined footnote.
+
+pandoc's markdown reads ~text~ as a subscript. Korean writes ranges with "~"
+(1~8권, 2018~2025), so two of them in one paragraph become "1<sub>8권,
+2018</sub>2025" and both tildes are gone — "337~368호" printed as "337368호",
+which every check passes because the HTML itself has lost them (#19). A <sub>
+whose content has a space, a Hangul syllable or a bracket is taken for that and
+restored as "~…~"; each one is reported on stderr. A real subscript (H₂O, a
+variable index) has none of those. To avoid the problem at the source, export
+with `pandoc -f markdown-subscript`, or write ranges as "∼" (U+223C) or "\~".
 
 --cover makes a cover page from pandoc's title block (<h1 class="title">,
 .subtitle, .author, .date) or the <title>; --toc and --page-numbers are
@@ -71,6 +84,8 @@ import markdown_chapter  # noqa: E402
 from hwpx_build import BASE_TEMPLATE, HwpxBuilder  # noqa: E402
 
 SKIP = {"nav", "style", "script", "head"}
+# A <sub> that pandoc made out of two "~" ranges: real subscripts hold none of these.
+TILDE_PAIR = re.compile(r"[\s\uac00-\ud7a3()\[\]（）]")
 # "그림 1. 그림 1. …" / "**표 2.** 표 2. …" — the label written twice
 DUP_LABEL = re.compile(r"^(\*\*)?(그림|표|Figure|Table)\s*(\d+)\.(\*\*)?\s*\2\s*\3\.\s*")
 
@@ -127,6 +142,8 @@ class _Converter(HTMLParser):
         self.in_pre = False
         self.in_code = False
         self.quote = 0
+        self.script_at: list = []        # (tag, index into buf) of open <sup>/<sub>
+        self.restored: list = []         # "~…~" put back, for the warning
         self.meta: dict = {}             # pandoc's title block, for a cover
         self.meta_key: str | None = None
         self.fig_src: str | None = None
@@ -190,6 +207,8 @@ class _Converter(HTMLParser):
         elif tag == "code" and not self.in_pre:
             self.buf.append("`")
             self.in_code = True
+        elif tag in ("sup", "sub") and not self.in_pre:
+            self.script_at.append((tag, len(self.buf)))
         elif tag == "br":
             self.buf.append("\n" if self.in_pre else _CELL_BR if self.in_cell else " ")
         elif tag == "pre":
@@ -244,6 +263,16 @@ class _Converter(HTMLParser):
         elif tag == "code" and not self.in_pre:
             self.buf.append("`")
             self.in_code = False
+        elif tag in ("sup", "sub") and self.script_at and not self.in_pre:
+            _, at = self.script_at.pop()
+            inner = "".join(self.buf[at:])
+            del self.buf[at:]
+            if tag == "sub" and TILDE_PAIR.search(inner):
+                self.buf.append("~" + inner + "~")
+                before = re.sub(r"\s+", " ", "".join(self.buf))[-30:]
+                self.restored.append(before)
+            else:
+                self.buf.append(f"<{tag}>{inner}</{tag}>")
         elif tag == "pre":
             self.in_pre = False
             code = "".join(self.buf).strip("\n")
@@ -318,6 +347,9 @@ def html_to_markdown(html_path, img_dir, number_levels=False, cover=False) -> st
     c = _Converter(html_path.resolve().parent, Path(img_dir), number_levels)
     c.feed(src)
     c.close()
+    for where in c.restored:
+        print(f"html_chapter: restored a range pandoc read as a subscript: …{where}",
+              file=sys.stderr)
     head = ""
     if cover:
         meta = dict(c.meta)
