@@ -1301,7 +1301,7 @@ class HwpxBuilder:
     #: Line heads that hang: the second line of "○ …" starts under the text.
     BULLETS = "○◦●•▪■□◇◆※*-·ㅇ◎▶▷➢✓☐☑①②③④⑤⑥⑦⑧⑨⑩"
 
-    def _cell_lines(self, c, size):
+    def _grid_cell_lines(self, c, size):
         """(text, paraPr, size, bold) per line of a grid_table cell."""
         base = {"align": c.get("align", "LEFT"), "size": c.get("size", size),
                 "bold": c.get("bold", False), "left_mm": 0.0, "first_mm": 0.0,
@@ -1421,7 +1421,7 @@ class HwpxBuilder:
                 rs, cs = c.get("rs", 1), c.get("cs", 1)
                 edges = tuple(c.get("edges", self._EDGES))
                 bf = self.borderfill(face_color=c.get("fill"), edges=edges)
-                tcs.append(self._tc(self._cell_lines(c, size), y, c["c"], rs, cs,
+                tcs.append(self._tc(self._grid_cell_lines(c, size), y, c["c"], rs, cs,
                                     sum(widths[c["c"]:c["c"] + cs]), sum(heights[y:y + rs]),
                                     bf, face, header=repeat_header and y == 0,
                                     valign=c.get("valign", "CENTER")))
