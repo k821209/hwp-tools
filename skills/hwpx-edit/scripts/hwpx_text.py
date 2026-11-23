@@ -69,6 +69,8 @@ class Styles:
                     script = ' 위첨자'
                 elif local(ch.tag) == 'subscript':
                     script = ' 아래첨자'
+                elif local(ch.tag) == 'underline' and ch.get('type', 'NONE') != 'NONE':
+                    script = ' 밑줄' + script
             self.label[cp.get('id')] = '%.1fpt %s%s%s' % (size, face, ' 굵게' if bold else '', script)
 
     def of(self, runs):

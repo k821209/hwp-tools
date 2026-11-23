@@ -117,6 +117,7 @@ the difference — which is how this was found, reported as a table-margin bug
 | `heading(level, text)` | a sized, bold paragraph (1→17 pt, 2→14, 3→13), kept on the page of the paragraph after it |
 | `bullet(text)` | a `·` paragraph with a hanging indent |
 | `table(rows, widths_mm=…, align=…, page_break=…, inline=…)` | `hp:tbl`, header row shaded and repeated on each page; columns sized to their content to keep the table short (`"equal"` splits evenly; a list of mm is used as given, wider than the body raises); splits between rows at a page boundary |
+| `grid_table(widths_mm, cells)` | a table with merged cells on a grid — a form; every position covered exactly once, checked before writing |
 | `page_number(pos=…, fmt=…, side_char=…, start=…)` | one `hp:pageNum` control: "- 1 -" at the foot of every page by default |
 | `page_break()` | the next block starts a new page (`pageBreak="1"` on its paragraph) |
 | `hide_page_number()` / `restart_page_number(n)` | no number on the page the next block lands on / that page is numbered `n` (`hp:pageHiding`, `hp:newNum`) |
@@ -136,6 +137,8 @@ out the header and footer overstates it by 30 mm at 15/15.
 
 A backslash before ASCII punctuation makes it the character itself, as in
 CommonMark: `\*`, `\[^1]`, `\|`. Inside a code span a backslash is literal.
+
+`<u>…</u>` underlines (`charpr(underline=True)`, `hh:underline type="BOTTOM"`).
 
 Superscript and subscript are written as the HTML tags — `x<sup>2</sup>`,
 `H<sub>2</sub>O` — and set with `<hh:supscript/>` / `<hh:subscript/>` in the
@@ -292,8 +295,50 @@ three tables in both layouts it was exact on 31 and one line high on the
 last, never low. On those tables the automatic layout took 12 lines where the
 even split took 22, and 10 where it took 19, with every header on one line.
 
+A column whose body is empty — a form's "계획" or "충족 근거", left for the
+writer — takes the weight of the widest filled column; sized by its header
+alone it came out the narrowest, the opposite of what it is for.
+
 `widths_mm="equal"` restores the even split; a list of millimetres is used as
-given.
+given. In markdown_chapter a separator row whose dashes differ in length
+(`|---|:----------------|---|`) sets the proportions.
+
+## Forms: merged cells
+
+`table()` takes rows of strings; a form needs cells that span rows and
+columns. `grid_table(widths_mm, cells)` lays them on a grid — `widths_mm` is
+every grid column, and each cell is a dict:
+
+```python
+b.grid_table([35, 55, 30, 50], [
+    {"r": 0, "c": 0, "text": "연구개발과제명", "fill": "#E8EDF3", "bold": True},
+    {"r": 0, "c": 1, "text": "…", "cs": 3},
+    {"r": 1, "c": 0, "text": "세부사업명", "rs": 2, "fill": "#E8EDF3", "align": "CENTER"},
+    ...
+])
+```
+
+Only `r` and `c` are required; `rs`/`cs` merge, and `fill`, `align`, `bold`,
+`size`, `valign` and `edges` (the borders the cell draws — `()` for a gap)
+style one cell. A merged cell is as wide as the columns it spans, and only its
+top-left position is written, as Hangul writes it.
+
+**Before anything is written**, every grid position must be covered by exactly
+one cell, no cell may run past the last column, and every row must start a
+cell of its own — otherwise it raises, naming the positions. A wrong merge is
+well-formed XML that every structural check passes and that shows only as a
+broken table in Hangul. (No Hangul-made table here has a row with no cell of
+its own — 923 tables, about 2,000 merged cells.) `verify()` reports
+`table_grid`, the same coverage check run on every table in the file: holes,
+overlaps, cells outside `rowCnt` × `colCnt`, rows without cells, cells whose
+`rowAddr` is not their row. On those 923 Hangul-made tables it flags none.
+
+The first row is not repeated on a new page unless `repeat_header=True`: a
+form's first row is a field. Text in a cell reads the same inline markup as
+anywhere else, `\n` included.
+
+`markdown_chapter.convert(..., builder=b)` appends a markdown body to a
+builder that already holds such a form, keeping its template and page set-up.
 
 ## Tables across pages
 
@@ -490,6 +535,10 @@ And a check document (2026-11-14), opened by a person in Hangul:
   holding two paragraphs (a `\n` in the cell string, `<br>` in markdown)
   shows them on two lines; with the bottom gap set from the next paragraph,
   a chapter band no longer covers the table above it
+- **forms with merged cells** (2026-11-23) — two grid_table() forms: a
+  3-column merge, 2-row label, a 6-row grey band, a 2×3 heading, a 3-row
+  stage, a borderless gap row; underline and superscript in a title; empty
+  writing columns given room; separator-row proportions 3:16:3
 - **superscript and subscript** (2026-11-22) — H₂O, CO₂, x², 10⁻³ from
   pandoc HTML; the "~" ranges pandoc had made into a subscript restored
 - **headings kept with their text**, and a code block clear of the table or

@@ -37,7 +37,8 @@ reads, so one source produces both formats:
     **소제목**           → a bold line on its own
     **표 N. 제목**(주)   → a caption on its own line; the bold need only open it
     | a | b |            → table (a --- separator row is required); <br> in a
-                           cell is a line break inside it
+                           cell is a line break inside it; dashes of different
+                           lengths (|---|:--------|) set the column proportions
     ![](path.png)        → image; the next line starting 그림/표 is its caption,
                            and a 그림 line after a blank line too
     ```                  → code block (fenced)
@@ -66,7 +67,7 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
-from hwpx_build import HwpxBuilder  # noqa: E402
+from hwpx_build import HwpxBuilder, MM  # noqa: E402
 
 BODY = "함초롬바탕"
 MONO = "굴림체"          # the usual fixed-width face present in Hangul installs
@@ -84,6 +85,23 @@ CAPTION = re.compile(r"^(\*\*)?(그림|표)\s*\d")
 BR = re.compile(r"\s*(?<!\\)<br\s*/?>\s*", re.I)
 CELL_SPLIT = re.compile(r"(?<!\\)\|")          # a bar, unless escaped as \|
 FOOTNOTE_DEF = re.compile(r"^\[\^([^\]\s]+)\]:\s*(.*)")
+
+
+def sep_widths(sep, b):
+    """Column widths from a separator row whose dashes differ in length.
+
+    `|---|:----------|---|` asks for the middle column to be wide: the dash
+    counts are read as proportions of the body width. A separator whose
+    dashes are all the same length (the usual `|---|---|`) says nothing about
+    widths, and the table sizes its columns to their content.
+    """
+    dashes = [c.count("-") for c in sep]
+    if len(set(dashes)) < 2 or not all(dashes):
+        return None
+    total = b.text_width / MM
+    widths = [total * d / sum(dashes) for d in dashes]
+    widths[-1] -= sum(widths) - total             # rounding lands in the last column
+    return widths
 
 
 def take_footnotes(lines):
@@ -204,14 +222,21 @@ def contents_page(b, heads, face, numbered):
 
 
 def convert(md_path, out_path, title=None, template=None, page_numbers=False,
-            cover=None, toc=False):
+            cover=None, toc=False, builder=None):
     """`cover` None means "if the front matter has a title". `page_numbers` is
-    True, or a dict passed to page_number() (pos, fmt, side_char, start)."""
+    True, or a dict passed to page_number() (pos, fmt, side_char, start).
+
+    `builder` is a HwpxBuilder already holding content — a form table built
+    with grid_table(), say — that the markdown is appended to; its template
+    and page set-up are kept (no page() call, `template` ignored)."""
     md = Path(md_path).read_text(encoding="utf-8")
     base = Path(md_path).resolve().parent
 
-    b = HwpxBuilder(template)
-    b.page(margins_mm=SPEC)
+    if builder is None:
+        b = HwpxBuilder(template)
+        b.page(margins_mm=SPEC)
+    else:
+        b = builder
     body_face = BODY if BODY in b.fonts() else None
     mono_face = MONO if MONO in b.fonts() else None
 
@@ -316,7 +341,7 @@ def convert(md_path, out_path, title=None, template=None, page_numbers=False,
             continue
 
         if is_table_head(lines, i):
-            rows = []
+            rows, sep = [], []
             while i < len(lines) and lines[i].strip().startswith("|"):
                 # <br> is how GFM and pandoc put a line break in a pipe cell;
                 # table() makes each line its own paragraph in the cell.
@@ -328,8 +353,10 @@ def convert(md_path, out_path, title=None, template=None, page_numbers=False,
                 cells = [BR.sub("\n", c.strip()) for c in CELL_SPLIT.split(row)]
                 if not set("".join(cells)) <= set("-: "):
                     rows.append(cells)
+                else:
+                    sep = cells
                 i += 1
-            b.table(rows, face=body_face)
+            b.table(rows, face=body_face, widths_mm=sep_widths(sep, b))
             continue
 
         if line.startswith(">"):

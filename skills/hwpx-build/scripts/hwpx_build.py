@@ -68,7 +68,7 @@ _ESCAPE = re.compile(r"\\([!-/:-@\[-`{-~])")
 #: Superscript and subscript, written as the HTML tags: `x<sup>2</sup>`,
 #: `H<sub>2</sub>O`. Not pandoc's ^…^ / ~…~ — in Korean text "~" marks a range
 #: (1~8권, 2018~2025), and two ranges in a paragraph pair up into a subscript.
-_SCRIPT = re.compile(r"<(sup|sub)>(.+?)</\1>", re.S)
+_SCRIPT = re.compile(r"<(sup|sub|u)>(.+?)</\1>", re.S)
 
 #: A footnote reference, markdown style: [^id].
 _FNREF = re.compile(r"\[\^([^\]\s]+)\]")
@@ -112,7 +112,7 @@ def mono_cols(text: str) -> int:
     return sum(1 if ord(c) < 128 else 2 for c in text)
 
 
-_MARKUP = re.compile(r"\*\*|(?<!\*)\*(?!\*)|`|</?su[bp]>")
+_MARKUP = re.compile(r"\*\*|(?<!\*)\*(?!\*)|`|</?su[bp]>|</?u>")
 
 
 def _glyph_em(c: str) -> float:
@@ -353,18 +353,19 @@ class HwpxBuilder:
         return tag[:-1].rstrip("/") + f' {name}="{value}"' + ("/>" if tag.endswith("/>") else ">")
 
     def charpr(self, size=13.0, bold=False, italic=False, color="#000000",
-               face=None, fill=None, shade=None, script=None) -> str:
+               face=None, fill=None, shade=None, script=None, underline=False) -> str:
         """Character properties id. Cloned from the template's first charPr.
 
         `size` in points, `face` a font name from `fonts()`, `fill` a
         borderFill id for character borders/background, `shade` a colour for
         the character shade (Hangul's 글자 모양 → 음영 색), `script` "sup" or
         "sub" for 위 첨자 / 아래 첨자 (`<hh:supscript/>` / `<hh:subscript/>`,
-        last in the charPr, where Hangul writes them).
+        last in the charPr, where Hangul writes them), `underline` True for a
+        solid underline (`hh:underline type="BOTTOM"`, Hangul's 밑줄).
         """
         if script not in (None, "sup", "sub"):
             raise HwpxBuildError('script is "sup", "sub" or None')
-        key = ("c", size, bold, italic, color.upper(), face, fill, shade, script)
+        key = ("c", size, bold, italic, color.upper(), face, fill, shade, script, underline)
         if key in self._cache:
             return self._cache[key]
 
@@ -388,6 +389,9 @@ class HwpxBuilder:
                     inner = inner.replace("<hh:underline", mark + "<hh:underline", 1)
                 else:
                     inner += mark
+            inner = re.sub(r'(<hh:underline\b[^>]*\btype=")\w+(" shape=")\w+',
+                           r"\g<1>%s\g<2>SOLID" % ("BOTTOM" if underline else "NONE"),
+                           inner, count=1)
             inner = inner.replace("<hh:supscript/>", "").replace("<hh:subscript/>", "")
             if script:
                 inner += "<hh:%sscript/>" % script
@@ -657,7 +661,7 @@ class HwpxBuilder:
             spans[ph] = (m.group(1), m.group(2))
             return ph
 
-        if "<su" in held:
+        if "<su" in held or "<u>" in held:
             held = _SCRIPT.sub(hold_script, held)
         if notes and "[^" in held:
             held = _FNREF.sub(hold_note, held)
@@ -705,9 +709,10 @@ class HwpxBuilder:
                                        face=face), len(self._fn_refs) - 1))
             if kind == "lit":
                 kind = None
-            if kind in ("sup", "sub"):
+            if kind in ("sup", "sub", "u"):
                 cid = self.charpr(size=size, bold=b, italic=i, color=color, face=face,
-                                  script=kind)
+                                  script=None if kind == "u" else kind,
+                                  underline=kind == "u")
                 return '<hp:run charPrIDRef="%s"><hp:t>%s</hp:t></hp:run>' % (cid, _esc(t))
             if kind == "code":
                 cid = self.charpr(size=size, bold=b, italic=i, color=ccolor or color,
@@ -952,6 +957,15 @@ class HwpxBuilder:
             floors = [f * total // sum(floors) for f in floors]
         free = total - sum(floors)
         weight = [max(need(r[j], False) for r in rows) or 1 for j in range(ncol)]
+        # A column whose body is empty is a column to be written in (a form's
+        # "계획" or "충족 근거"). Sized by its header alone it came out the
+        # narrowest, the opposite of what it is for; it gets the widest
+        # filled column's weight instead.
+        body = rows[1:] if header else rows
+        filled = [w for j, w in enumerate(weight) if any(str(r[j]).strip() for r in body)]
+        for j in range(ncol):
+            if body and not any(str(r[j]).strip() for r in body) and filled:
+                weight[j] = max(filled)
         w = [floors[j] + int(free * weight[j] / sum(weight)) for j in range(ncol)]
         w[-1] += total - sum(w)
 
@@ -1012,18 +1026,7 @@ class HwpxBuilder:
         elif isinstance(widths_mm, str):
             raise HwpxBuildError('widths_mm is a list of mm, "auto" or "equal"')
         else:
-            if len(widths_mm) != ncol:
-                raise HwpxBuildError(
-                    f"widths_mm has {len(widths_mm)} widths for {ncol} columns")
-            widths = [int(round(w * MM)) for w in widths_mm]
-            over = sum(widths) - self.text_width
-            if over > 0.5 * MM:          # tolerate rounding, not a real overrun
-                raise HwpxBuildError(
-                    "widths_mm add up to %.1f mm, %.1f mm wider than the body "
-                    "(text_width %.1f mm)" % (sum(widths) / MM, over / MM,
-                                              self.text_width / MM))
-            if over > 0:
-                widths[-1] -= over
+            widths = self._widths_from_mm(widths_mm, ncol)
 
         grid = self.borderfill(edges=("left", "right", "top", "bottom"))
         head = self.borderfill(face_color=head_fill,
@@ -1032,37 +1035,135 @@ class HwpxBuilder:
 
         trs = []
         for ri, row in enumerate(rows):
-            tcs = []
-            for ci, val in enumerate(row):
-                bold = header and ri == 0
-                # A cell holding several lines is one paragraph per line. A
-                # single paragraph cannot break where the author meant it to:
-                # hp:t has no line break, so "\n" would print as nothing and
-                # the lines would run together with no separator at all.
-                cell = "".join(
-                    self._p(cell_pp, self._runs(ln, size, bold, "#000000", face), inner=True)
-                    for ln in str(val).split("\n"))
-                tcs.append(
-                    '<hp:tc name="" header="{hd}" hasMargin="0" protect="0" editable="0" '
-                    'dirty="0" borderFillIDRef="{bf}">'
-                    '<hp:subList id="" textDirection="HORIZONTAL" lineWrap="BREAK" '
-                    'vertAlign="CENTER" linkListIDRef="0" linkListNextIDRef="0" '
-                    'textWidth="0" textHeight="0" hasTextRef="0" hasNumRef="0">{p}</hp:subList>'
-                    '<hp:cellAddr colAddr="{c}" rowAddr="{r}"/>'
-                    '<hp:cellSpan colSpan="1" rowSpan="1"/>'
-                    '<hp:cellSz width="{w}" height="2000"/>'
-                    '<hp:cellMargin left="510" right="510" top="141" bottom="141"/>'
-                    "</hp:tc>".format(hd=1 if bold else 0,
-                                      bf=head if bold else grid,
-                                      p=cell,
-                                      c=ci, r=ri, w=widths[ci]))
-            trs.append("<hp:tr>" + "".join(tcs) + "</hp:tr>")
+            bold = header and ri == 0
+            trs.append("<hp:tr>" + "".join(
+                self._tc(str(val), ri, ci, 1, 1, widths[ci], 2000,
+                         head if bold else grid, cell_pp, size, face, bold, header=bold)
+                for ci, val in enumerate(row)) + "</hp:tr>")
+        tbl = self._tbl(trs, len(rows), ncol, sum(widths), grid, page_break, inline,
+                        align, repeat_header=True)
+        return self._place_table(tbl, align, size, face)
 
+    def _widths_from_mm(self, widths_mm, ncol):
+        """HWPUNIT widths from a list of mm: as given, never wider than the body."""
+        if len(widths_mm) != ncol:
+            raise HwpxBuildError(f"widths_mm has {len(widths_mm)} widths for {ncol} columns")
+        widths = [int(round(w * MM)) for w in widths_mm]
+        over = sum(widths) - self.text_width
+        if over > 0.5 * MM:          # tolerate rounding, not a real overrun
+            raise HwpxBuildError(
+                "widths_mm add up to %.1f mm, %.1f mm wider than the body "
+                "(text_width %.1f mm)" % (sum(widths) / MM, over / MM,
+                                          self.text_width / MM))
+        if over > 0:
+            widths[-1] -= over
+        return widths
+
+    _EDGES = ("left", "right", "top", "bottom")
+
+    def grid_table(self, widths_mm, cells, size=10.5, face=None, align="LEFT",
+                   page_break="TABLE", inline=False, repeat_header=False):
+        """A table with merged cells, laid out on a grid — the shape of a form.
+
+        `widths_mm` gives every grid column (the columns a merged cell spans
+        add up). `cells` is a list of dicts, one per cell that is written:
+
+            {"r": 0, "c": 0, "text": "세부사업명", "rs": 2, "cs": 1,
+             "fill": "#E8EDF3", "align": "CENTER", "bold": True, "size": 10,
+             "edges": ("left", "right", "top", "bottom"), "valign": "CENTER"}
+
+        Only r and c are required. Every grid position must be covered by
+        exactly one cell, and every row must start at least one cell of its
+        own — checked before anything is written, because a wrong merge
+        leaves well-formed XML that every structural check passes and that
+        only shows as a broken table in Hangul. (No Hangul-made table here has
+        a row with no cell of its own; such a row is two rows merged.)
+
+        `edges` are the borders the cell draws; a neighbour still draws its
+        own, so a borderless gap needs its neighbours' edges too. The header
+        row is not repeated on a new page unless `repeat_header` — a form's
+        first row is a field, not a heading.
+        """
+        if page_break not in ("TABLE", "CELL", "NONE"):
+            raise HwpxBuildError('page_break must be "TABLE", "CELL" or "NONE"')
+        ncol = len(widths_mm)
+        widths = self._widths_from_mm(widths_mm, ncol)
+        cells = [dict(c) for c in cells]
+        if not cells:
+            raise HwpxBuildError("grid_table() needs at least one cell")
+        nrow = max(c["r"] + c.get("rs", 1) for c in cells)
+        owner = {}
+        problems = []
+        for k, c in enumerate(cells):
+            r, cc, rs, cs = c["r"], c["c"], c.get("rs", 1), c.get("cs", 1)
+            if rs < 1 or cs < 1 or r < 0 or cc < 0 or cc + cs > ncol:
+                problems.append(f"cell at ({r},{cc}) span {rs}x{cs} does not fit {ncol} columns")
+                continue
+            for y in range(r, r + rs):
+                for x in range(cc, cc + cs):
+                    if (y, x) in owner:
+                        o = cells[owner[(y, x)]]
+                        problems.append(f"({y},{x}) covered by the cells at "
+                                        f"({o['r']},{o['c']}) and ({r},{cc})")
+                    owner[(y, x)] = k
+        holes = [(y, x) for y in range(nrow) for x in range(ncol) if (y, x) not in owner]
+        if holes:
+            problems.append(f"{len(holes)} grid position(s) not covered: {holes[:8]}")
+        starts = {c["r"] for c in cells}
+        empty = [y for y in range(nrow) if y not in starts]
+        if empty:
+            problems.append(f"row(s) {empty} start no cell of their own — merge them "
+                            "into the row above")
+        if problems:
+            raise HwpxBuildError("grid_table: " + "; ".join(problems))
+
+        table_bf = self.borderfill()
+        trs = []
+        for y in range(nrow):
+            tcs = []
+            for c in sorted((c for c in cells if c["r"] == y), key=lambda c: c["c"]):
+                rs, cs = c.get("rs", 1), c.get("cs", 1)
+                edges = tuple(c.get("edges", self._EDGES))
+                bf = self.borderfill(face_color=c.get("fill"), edges=edges)
+                pp = self.parapr(align=c.get("align", "LEFT"), line_spacing=130)
+                tcs.append(self._tc(str(c.get("text", "")), y, c["c"], rs, cs,
+                                    sum(widths[c["c"]:c["c"] + cs]), 2000 * rs, bf, pp,
+                                    c.get("size", size), face, c.get("bold", False),
+                                    header=repeat_header and y == 0,
+                                    valign=c.get("valign", "CENTER")))
+            trs.append("<hp:tr>" + "".join(tcs) + "</hp:tr>")
+        tbl = self._tbl(trs, nrow, ncol, sum(widths), table_bf, page_break, inline,
+                        align, repeat_header=repeat_header)
+        return self._place_table(tbl, align, size, face)
+
+    def _tc(self, text, r, c, rs, cs, width, height, border_fill, para_pr, size,
+            face, bold, header=False, valign="CENTER"):
+        """One hp:tc. A cell holding several lines is one paragraph per line: a
+        single paragraph cannot break where the author meant it to, since hp:t
+        has no line break — "\n" would print as nothing and the lines would
+        run together with no separator at all."""
+        cell = "".join(
+            self._p(para_pr, self._runs(ln, size, bold, "#000000", face), inner=True)
+            for ln in text.split("\n"))
+        return ('<hp:tc name="" header="{hd}" hasMargin="0" protect="0" editable="0" '
+                'dirty="0" borderFillIDRef="{bf}">'
+                '<hp:subList id="" textDirection="HORIZONTAL" lineWrap="BREAK" '
+                'vertAlign="{va}" linkListIDRef="0" linkListNextIDRef="0" '
+                'textWidth="0" textHeight="0" hasTextRef="0" hasNumRef="0">{p}</hp:subList>'
+                '<hp:cellAddr colAddr="{c}" rowAddr="{r}"/>'
+                '<hp:cellSpan colSpan="{cs}" rowSpan="{rs}"/>'
+                '<hp:cellSz width="{w}" height="{h}"/>'
+                '<hp:cellMargin left="510" right="510" top="141" bottom="141"/>'
+                "</hp:tc>").format(hd=1 if header else 0, bf=border_fill, va=valign,
+                                   p=cell, c=c, r=r, cs=cs, rs=rs, w=width, h=height)
+
+    def _tbl(self, trs, nrows, ncols, width, border_fill, page_break, inline, align,
+             repeat_header=True):
         self._instid += 1
-        tbl = (
+        return (
             '<hp:tbl id="{i}" zOrder="0" numberingType="TABLE" textWrap="TOP_AND_BOTTOM" '
             'textFlow="BOTH_SIDES" lock="0" dropcapstyle="None" pageBreak="{pb}" '
-            'repeatHeader="1" rowCnt="{rc}" colCnt="{cc}" cellSpacing="0" '
+            'repeatHeader="{rh}" rowCnt="{rc}" colCnt="{cc}" cellSpacing="0" '
             'borderFillIDRef="{bf}" noAdjust="0">'
             '<hp:sz width="{w}" widthRelTo="ABSOLUTE" height="2000" heightRelTo="ABSOLUTE" '
             'protect="0"/>'
@@ -1077,14 +1178,16 @@ class HwpxBuilder:
             # against the cell rule. 510/141 is what Hangul gives a new table.
             '<hp:inMargin left="510" right="510" top="141" bottom="141"/>'
             "{rows}</hp:tbl>"
-        ).format(i=self._instid, rc=len(rows), cc=ncol, bf=grid, pb=page_break,
+        ).format(i=self._instid, rc=nrows, cc=ncols, bf=border_fill, pb=page_break,
+                 rh=1 if repeat_header else 0,
                  tac=1 if inline else 0,
                  omb=283 if inline else "@@GAP@@",
                  # an inline table is placed by its paragraph's alignment; an
                  # anchored one ignores that and is placed by horzAlign
                  ha="LEFT" if inline else {"JUSTIFY": "LEFT"}.get(align, align),
-                 w=sum(widths), rows="".join(trs))
+                 w=width, rows="".join(trs))
 
+    def _place_table(self, tbl, align, size, face):
         # A table is a control object: it lives inside an hp:run, exactly like
         # a picture. Placed as a direct child of hp:p every XML check still
         # passes, hwpx_text still reads it back — and Hangul drops it on open.
@@ -1298,6 +1401,50 @@ class HwpxBuilder:
     # ---------------------------------------------------------------- verify
 
     @staticmethod
+    def _grid_report(section_xml):
+        """Each table's cells against its own grid: holes, overlaps, cells
+        outside rowCnt × colCnt, rows with no cell of their own, and cells
+        whose rowAddr is not the row they are written in. A table nested in a
+        cell is checked on its own grid. All of these pass the XML checks."""
+        try:
+            root = ET.fromstring(section_xml.encode())
+        except ET.ParseError:
+            return None
+        loc = lambda e: e.tag.rsplit("}", 1)[-1]
+        out = {"tables": 0, "bad": []}
+        for k, tbl in enumerate(e for e in root.iter() if loc(e) == "tbl"):
+            out["tables"] += 1
+            nr, nc = int(tbl.get("rowCnt", 0)), int(tbl.get("colCnt", 0))
+            rows = [e for e in tbl if loc(e) == "tr"]
+            seen, over, outside, wrong_row, bare = set(), 0, 0, 0, []
+            for y, tr in enumerate(rows):
+                tcs = [e for e in tr if loc(e) == "tc"]
+                if not tcs:
+                    bare.append(y)
+                for tc in tcs:
+                    addr = next((e for e in tc if loc(e) == "cellAddr"), None)
+                    span = next((e for e in tc if loc(e) == "cellSpan"), None)
+                    if addr is None:
+                        continue
+                    c0, r0 = int(addr.get("colAddr")), int(addr.get("rowAddr"))
+                    cs = int(span.get("colSpan", 1)) if span is not None else 1
+                    rs = int(span.get("rowSpan", 1)) if span is not None else 1
+                    wrong_row += r0 != y
+                    for yy in range(r0, r0 + rs):
+                        for xx in range(c0, c0 + cs):
+                            if not (0 <= yy < nr and 0 <= xx < nc):
+                                outside += 1
+                            elif (yy, xx) in seen:
+                                over += 1
+                            seen.add((yy, xx))
+            holes = nr * nc - len({p for p in seen if 0 <= p[0] < nr and 0 <= p[1] < nc})
+            if holes or over or outside or wrong_row or bare or len(rows) != nr:
+                out["bad"].append({"table": k, "rowCnt": nr, "colCnt": nc, "rows": len(rows),
+                                   "holes": holes, "overlaps": over, "outside": outside,
+                                   "rowAddr_mismatch": wrong_row, "rows_without_cells": bare})
+        return out
+
+    @staticmethod
     def verify(path, expect_images=None, expect_tables=None):
         """Structural checks. Passing them does NOT mean Hangul will open it.
 
@@ -1361,6 +1508,7 @@ class HwpxBuilder:
         # here and to the text extract; say what the file asks for.
         pn = re.search(r'<hp:pageNum\b[^>]*pos="(\w+)"', section)
         r["page_numbering"] = pn.group(1) if pn else "none"
+        r["table_grid"] = HwpxBuilder._grid_report(section)
         pbs = re.findall(r'<hp:tbl\b[^>]*\bpageBreak="(\w+)"', section)
         r["table_page_break"] = {v: pbs.count(v) for v in sorted(set(pbs))}
         # A body written here carries no line cache; Hangul builds it on open.
