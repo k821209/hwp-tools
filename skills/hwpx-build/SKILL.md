@@ -100,6 +100,15 @@ full `<hh:margin>` and `<hh:lineSpacing>`. Set only the first and Hangul reads
 the other: the indent, the hanging indent for a reference list, the line spacing
 all silently revert. `parapr()` replaces every occurrence, not the first.
 
+**A hanging indent is encoded the other way round from Word.** Hangul reads a
+negative `hc:intent` as "first line at the left margin, the others |intent|
+further in" (내어쓰기); most Hangul-made hanging paragraphs have `left=0` and a
+negative intent. `parapr(left_mm, first_mm)` keeps Word's meaning — first line
+at `left_mm + first_mm`, the rest at `left_mm` — and translates. Until
+2026-11-23 it did not, so bullets, numbered items and reference lists came out
+pushed right by their hanging width: the second line still lined up under the
+text, which is why a look at one did not catch it.
+
 **6. `hp:secPr` travels with its `hp:colPr`.**
 The page size and margins ride in the first paragraph's first run, and Hangul
 writes the column definition (`<hp:ctrl><hp:colPr …/></hp:ctrl>`) right after
@@ -140,6 +149,21 @@ A backslash before ASCII punctuation makes it the character itself, as in
 CommonMark: `\*`, `\[^1]`, `\|`. Inside a code span a backslash is literal.
 
 `<u>…</u>` underlines (`charpr(underline=True)`, `hh:underline type="BOTTOM"`).
+
+**Markup nests, in any order**: `**<u>과제제안요구서<sup>RFP</sup>(안)</u>**` is
+bold, underlined, and RFP a bold underlined superscript; `**굵게 *기울임* 굵게**`
+italicises the middle. Each opener is matched with its closer and the text
+between is parsed again with the style added. Before, `<u>`/`<sup>`/`<sub>`
+were taken as one opaque piece and markup inside came out as characters — and
+so did italic inside bold — past every check. An emphasis opener followed by a
+space, or a closer preceded by one, is text (CommonMark's flanking rule), so
+`2 * 3 * 4` stays arithmetic.
+
+A tag with no partner is printed as characters, so it is reported twice: while
+building, in `builder.unparsed_markup` with a `UserWarning`; in the file,
+`verify()["markup_left"]` counts `<u>`/`<sup>`/`<sub>` and `**` left in the
+body text. An escaped `\<u>` counts there too — it points at something to
+look at, it does not judge it.
 
 Superscript and subscript are written as the HTML tags — `x<sup>2</sup>`,
 `H<sub>2</sub>O` — and set with `<hh:supscript/>` / `<hh:subscript/>` in the
@@ -335,7 +359,17 @@ overlaps, cells outside `rowCnt` × `colCnt`, rows without cells, cells whose
 `rowAddr` is not their row. On those 923 Hangul-made tables it flags none.
 
 The first row is not repeated on a new page unless `repeat_header=True`: a
-form's first row is a field. Text in a cell reads the same inline markup as
+form's first row is a field.
+
+**Each line in a cell is its own paragraph and can be styled.** `"lines"`
+instead of `"text"` takes strings or dicts (`t`, `align`, `size`, `bold`,
+`left_mm`, `first_mm`, `prev_pt`, `next_pt`, `hang`). `"line_style": "bullets"`
+hangs every line opening with a head from `BULLETS` (○ ※ □ - * …): the width
+of the head becomes a hanging indent, so a wrapped second line starts under
+the text, and leading spaces become an indent — the shape of a form's body.
+
+Rows are 7 mm unless `row_height_mm` (all rows) or `row_heights_mm` (each row)
+says otherwise; Hangul grows a row to its text, so this is a minimum. Text in a cell reads the same inline markup as
 anywhere else, `\n` included.
 
 `markdown_chapter.convert(..., builder=b)` appends a markdown body to a
@@ -555,6 +589,12 @@ And a check document (2026-11-14), opened by a person in Hangul:
   holding two paragraphs (a `\n` in the cell string, `<br>` in markdown)
   shows them on two lines; with the bottom gap set from the next paragraph,
   a chapter band no longer covers the table above it
+- **nested markup, lines in a cell, row heights, hanging indents**
+  (2026-11-23) — a title bold, underlined, with a bold underlined superscript;
+  italic inside bold and bold inside italic; a form cell whose ※/○ lines hang
+  under their text and whose "*" note is indented and smaller; 5 mm rows;
+  bullets, numbered items and a reference list starting at the body's left
+  edge with their second lines under the text
 - **a form table copied from another document** (2026-11-23) — two tables
   of a government survey form (11 merged cells, a 44-font header) copied into
   the shipped template: borders, shading, mixed faces and weights, blue

@@ -70,6 +70,73 @@ _ESCAPE = re.compile(r"\\([!-/:-@\[-`{-~])")
 #: (1~8권, 2018~2025), and two ranges in a paragraph pair up into a subscript.
 _SCRIPT = re.compile(r"<(sup|sub|u)>(.+?)</\1>", re.S)
 
+# An emphasis opener is not followed by a space, a closer not preceded by one
+# (CommonMark's flanking rule), so "2 * 3 * 4" stays arithmetic.
+_OPEN = re.compile(r"\*\*(?=\S)|(?<!\*)\*(?![\*\s])|<(u|sup|sub)>")
+_BOLD_CLOSE = re.compile(r"(?<=\S)\*\*")
+_ITALIC = re.compile(r"(?<=[^\s*])\*(?!\*)")
+_TAG_LEFT = re.compile(r"</?(?:u|sup|sub)>")
+
+
+def _nest(text, style):
+    """Split `text` into (piece, style) with markup applied, nested.
+
+    style is (bold, italic, underline, script). The earliest opener that has
+    a closer is applied, and the text between them is parsed again with the
+    style added — so **, *, <u>, <sup> and <sub> combine in any order
+    (`**<u>제목<sup>RFP</sup></u>**`). An opener with no closer is text.
+    Before, <u>…</u> and friends were taken as one opaque piece: markup
+    inside them came out as characters, past every check.
+    """
+    out, pos = [], 0
+    while pos < len(text):
+        found = None
+        for m in _OPEN.finditer(text, pos):
+            tok, tag = m.group(0), m.group(1)
+            if tok == "**":
+                cm = _BOLD_CLOSE.search(text, m.end() + 1)
+                close = (cm.start(), cm.end()) if cm else None
+            elif tok == "*":
+                cm = _ITALIC.search(text, m.end() + 1)
+                close = (cm.start(), cm.end()) if cm else None
+            else:                                # <u>, <sup>, <sub>: count nesting
+                depth, i, close = 1, m.end(), None
+                o_t, c_t = f"<{tag}>", f"</{tag}>"
+                while depth:
+                    o, c = text.find(o_t, i), text.find(c_t, i)
+                    if c < 0:
+                        break
+                    if 0 <= o < c:
+                        depth, i = depth + 1, o + len(o_t)
+                    else:
+                        depth, i = depth - 1, c + len(c_t)
+                        if not depth:
+                            close = (c, c + len(c_t))
+                if close and close[0] == m.end():
+                    close = None                  # nothing between: leave as text
+            if close:
+                found = (m, tok, tag, close)
+                break
+        if not found:
+            out.append((text[pos:], style))
+            break
+        m, tok, tag, (cs, ce) = found
+        if m.start() > pos:
+            out.append((text[pos:m.start()], style))
+        b, i, u, sc = style
+        inner = (True, i, u, sc) if tok == "**" else (b, True, u, sc) if tok == "*" else \
+                (b, i, True, sc) if tag == "u" else (b, i, u, tag)
+        out.extend(_nest(text[m.end():cs], inner))
+        pos = ce
+    return [p for p in out if p[0]]
+
+
+def _unparsed(pieces):
+    """Recognised tags still standing in the text after parsing: an opener
+    with no closer, a closer with no opener."""
+    return [t for t, _ in pieces for t in _TAG_LEFT.findall(t)]
+
+
 #: A footnote reference, markdown style: [^id].
 _FNREF = re.compile(r"\[\^([^\]\s]+)\]")
 #: Where a reference sits in the body until save() knows every definition.
@@ -284,6 +351,9 @@ class HwpxBuilder:
         #: face the template lacks. Hangul would substitute silently and so would this builder;
         #: this is the record that it happened.
         self.font_fallbacks: dict = {}
+        #: Text in which a <u>/<sup>/<sub> had no partner and was printed as
+        #: characters — a typo that every structural check passes.
+        self.unparsed_markup: list = []
 
     # ------------------------------------------------------------- header ids
 
@@ -414,7 +484,10 @@ class HwpxBuilder:
         it (문단 모양 → 다음 문단과 함께) — for a heading, so it is never the
         last line of a page with its text on the next.
 
-        `first_mm` negative gives a hanging indent. `fill` shades the paragraph,
+        `first_mm` negative gives a hanging indent: the first line starts at
+        `left_mm + first_mm` and the lines after it at `left_mm`, as in Word.
+        Hangul encodes 내어쓰기 the other way (left margin = where the first
+        line starts, the rest |intent| further in), and this translates. `fill` shades the paragraph,
         `border_edges` is any of ("left","right","top","bottom").
 
         `border_offsets` is (left, right, top, bottom) in HWPUNIT: how far the
@@ -444,7 +517,13 @@ class HwpxBuilder:
             '<hc:next value="{n}" unit="HWPUNIT"/>'
             "</hh:margin>"
             '<hh:lineSpacing type="PERCENT" value="{ls}" unit="HWPUNIT"/>'
-        ).format(i=int(round(first_mm * MM)), l=int(round(left_mm * MM)),
+        ).format(i=int(round(first_mm * MM)),
+                 # Hangul reads a negative intent as "first line at the left
+                 # margin, the others |intent| further in" (measured: 내어쓰기),
+                 # not as Word's "first line pulled out". Callers here mean
+                 # Word's — first line at left+first, the rest at left — so the
+                 # left margin Hangul is given is where the first line starts.
+                 l=int(round((left_mm + min(first_mm, 0.0)) * MM)),
                  r=int(round(right_mm * MM)), p=int(round(prev_pt * 100)),
                  n=int(round(next_pt * 100)), ls=int(line_spacing))
 
@@ -657,51 +736,38 @@ class HwpxBuilder:
         if "\\" in held:
             held = _ESCAPE.sub(hold_escape, held)
 
-        def hold_script(m):
-            ph = next(free, None)
-            if ph is None:
-                return m.group(0)
-            spans[ph] = (m.group(1), m.group(2))
-            return ph
-
-        if "<su" in held or "<u>" in held:
-            held = _SCRIPT.sub(hold_script, held)
         if notes and "[^" in held:
             held = _FNREF.sub(hold_note, held)
 
-        pieces, pos = [], 0
-        for m in _EMPH.finditer(held):
-            if m.start() > pos:
-                pieces.append((held[pos:m.start()], bold, False))
-            if m.group(1) is not None:
-                pieces.append((m.group(1), True, False))
-            else:
-                pieces.append((m.group(2), bold, True))
-            pos = m.end()
-        if pos < len(held):
-            pieces.append((held[pos:], bold, False))
+        pieces = _nest(held, (bold, False, False, None))
+        left = _unparsed(pieces)
+        if left:
+            self.unparsed_markup.append(text)
+            warnings.warn(f"markup left as text (no partner): {left} in {text[:60]!r}",
+                          stacklevel=3)
 
-        out = []          # (text, bold, italic, is_code)
-        for t, b, i in pieces:
+        out = []          # (text, style, kind) — style is (bold, italic, underline, script)
+        for t, st in pieces:
             last = 0
             for k, ch in enumerate(t) if spans else ():
                 if ch in spans:
                     if k > last:
-                        out.append((t[last:k], b, i, False))
+                        out.append((t[last:k], st, None))
                     kind, val = spans[ch]
-                    out.append((val, b, i, kind))
+                    out.append((val, st, kind))
                     last = k + 1
             if last < len(t):
-                out.append((t[last:], b, i, None))
+                out.append((t[last:], st, None))
         if not out:
-            out = [("", bold, False, None)]
+            out = [("", (bold, False, False, None), None)]
 
         cface, cshade, ccolor = getattr(self, "_code_style", ("굴림체", "#F2F2F2", None))
         if cface and cface not in self.fonts():
             self._note_fallback(cface, face or "the surrounding face")
             cface = None          # rule 3: never name a face the header lacks
 
-        def run(t, b, i, kind):
+        def run(t, st, kind):
+            b, i, u, sc = st
             if kind == "fn":
                 # The control goes in its own run, inside hp:ctrl. Its content
                 # is written at save(), once every definition is known.
@@ -710,18 +776,12 @@ class HwpxBuilder:
                         '</hp:ctrl></hp:run>'
                         % (self.charpr(size=size, bold=b, italic=i, color=color,
                                        face=face), len(self._fn_refs) - 1))
-            if kind == "lit":
-                kind = None
-            if kind in ("sup", "sub", "u"):
-                cid = self.charpr(size=size, bold=b, italic=i, color=color, face=face,
-                                  script=None if kind == "u" else kind,
-                                  underline=kind == "u")
-                return '<hp:run charPrIDRef="%s"><hp:t>%s</hp:t></hp:run>' % (cid, _esc(t))
             if kind == "code":
                 cid = self.charpr(size=size, bold=b, italic=i, color=ccolor or color,
-                                  face=cface or face, shade=cshade)
-            else:
-                cid = self.charpr(size=size, bold=b, italic=i, color=color, face=face)
+                                  face=cface or face, shade=cshade, script=sc, underline=u)
+            else:                                # plain text, or an escaped character
+                cid = self.charpr(size=size, bold=b, italic=i, color=color, face=face,
+                                  script=sc, underline=u)
             return '<hp:run charPrIDRef="%s"><hp:t>%s</hp:t></hp:run>' % (cid, _esc(t))
 
         return "".join(run(*o) for o in out)
@@ -1040,8 +1100,9 @@ class HwpxBuilder:
         for ri, row in enumerate(rows):
             bold = header and ri == 0
             trs.append("<hp:tr>" + "".join(
-                self._tc(str(val), ri, ci, 1, 1, widths[ci], 2000,
-                         head if bold else grid, cell_pp, size, face, bold, header=bold)
+                self._tc([(ln, cell_pp, size, bold) for ln in str(val).split("\n")],
+                         ri, ci, 1, 1, widths[ci], 2000,
+                         head if bold else grid, face, header=bold)
                 for ci, val in enumerate(row)) + "</hp:tr>")
         tbl = self._tbl(trs, len(rows), ncol, sum(widths), grid, page_break, inline,
                         align, repeat_header=True)
@@ -1237,8 +1298,53 @@ class HwpxBuilder:
 
     _EDGES = ("left", "right", "top", "bottom")
 
+    #: Line heads that hang: the second line of "○ …" starts under the text.
+    BULLETS = "○◦●•▪■□◇◆※*-·ㅇ◎▶▷➢✓☐☑①②③④⑤⑥⑦⑧⑨⑩"
+
+    def _cell_lines(self, c, size):
+        """(text, paraPr, size, bold) per line of a grid_table cell."""
+        base = {"align": c.get("align", "LEFT"), "size": c.get("size", size),
+                "bold": c.get("bold", False), "left_mm": 0.0, "first_mm": 0.0,
+                "prev_pt": 0.0, "next_pt": 0.0}
+        raw = c.get("lines")
+        if raw is None:
+            raw = str(c.get("text", "")).split("\n")
+        out = []
+        for ln in raw:
+            spec = dict(base, **(ln if isinstance(ln, dict) else {"t": ln}))
+            t = str(spec.get("t", ""))
+            if c.get("line_style") == "bullets" and not isinstance(ln, dict) or \
+                    (isinstance(ln, dict) and spec.get("hang") == "auto"):
+                t, spec = self._hang(t, spec)
+            pp = self.parapr(align=spec["align"], line_spacing=130,
+                             left_mm=spec["left_mm"], first_mm=spec["first_mm"],
+                             prev_pt=spec["prev_pt"], next_pt=spec["next_pt"])
+            out.append((t, pp, spec["size"], spec["bold"]))
+        return out
+
+    def _hang(self, t, spec):
+        """Indent a line by its leading spaces, and hang it after a bullet: the
+        width of the head ("○ ", "※ ", "  * ") becomes the left margin and a
+        negative first-line indent, so a wrapped second line starts under the
+        text, as in a form."""
+        lead = len(t) - len(t.lstrip(" "))
+        body = t[lead:]
+        head = ""
+        if body and body[0] in self.BULLETS:
+            j = 1
+            while j < len(body) and body[j] == " ":
+                j += 1
+            head = body[:j]
+        pt = 0.3528 * spec["size"]               # 1 pt in mm, times the size
+        indent = lead * _glyph_em(" ") * pt
+        hang = sum(_glyph_em(ch) for ch in head) * pt
+        spec = dict(spec, left_mm=spec["left_mm"] + indent + hang,
+                    first_mm=spec["first_mm"] - hang)
+        return body, spec
+
     def grid_table(self, widths_mm, cells, size=10.5, face=None, align="LEFT",
-                   page_break="TABLE", inline=False, repeat_header=False):
+                   page_break="TABLE", inline=False, repeat_header=False,
+                   row_height_mm=None, row_heights_mm=None):
         """A table with merged cells, laid out on a grid — the shape of a form.
 
         `widths_mm` gives every grid column (the columns a merged cell spans
@@ -1259,6 +1365,16 @@ class HwpxBuilder:
         own, so a borderless gap needs its neighbours' edges too. The header
         row is not repeated on a new page unless `repeat_header` — a form's
         first row is a field, not a heading.
+
+        Lines in a cell are paragraphs, each styleable: `"lines"` instead of
+        `"text"`, each a string or a dict {"t", "align", "size", "bold",
+        "left_mm", "first_mm", "prev_pt", "next_pt", "hang": "auto"}.
+        `"line_style": "bullets"` hangs every line that opens with a head in
+        BULLETS (○ ※ □ - * …) so its second line starts under its text, and
+        indents it by its leading spaces.
+
+        Rows are 7 mm unless `row_height_mm` (all) or `row_heights_mm` (per
+        row) say otherwise. It is a minimum: Hangul grows a row to its text.
         """
         if page_break not in ("TABLE", "CELL", "NONE"):
             raise HwpxBuildError('page_break must be "TABLE", "CELL" or "NONE"')
@@ -1293,6 +1409,10 @@ class HwpxBuilder:
         if problems:
             raise HwpxBuildError("grid_table: " + "; ".join(problems))
 
+        if row_heights_mm is not None and len(row_heights_mm) != nrow:
+            raise HwpxBuildError(f"row_heights_mm has {len(row_heights_mm)} heights for {nrow} rows")
+        heights = ([int(round(h * MM)) for h in row_heights_mm] if row_heights_mm else
+                   [int(round(row_height_mm * MM)) if row_height_mm else 2000] * nrow)
         table_bf = self.borderfill()
         trs = []
         for y in range(nrow):
@@ -1301,26 +1421,27 @@ class HwpxBuilder:
                 rs, cs = c.get("rs", 1), c.get("cs", 1)
                 edges = tuple(c.get("edges", self._EDGES))
                 bf = self.borderfill(face_color=c.get("fill"), edges=edges)
-                pp = self.parapr(align=c.get("align", "LEFT"), line_spacing=130)
-                tcs.append(self._tc(str(c.get("text", "")), y, c["c"], rs, cs,
-                                    sum(widths[c["c"]:c["c"] + cs]), 2000 * rs, bf, pp,
-                                    c.get("size", size), face, c.get("bold", False),
-                                    header=repeat_header and y == 0,
+                tcs.append(self._tc(self._cell_lines(c, size), y, c["c"], rs, cs,
+                                    sum(widths[c["c"]:c["c"] + cs]), sum(heights[y:y + rs]),
+                                    bf, face, header=repeat_header and y == 0,
                                     valign=c.get("valign", "CENTER")))
             trs.append("<hp:tr>" + "".join(tcs) + "</hp:tr>")
         tbl = self._tbl(trs, nrow, ncol, sum(widths), table_bf, page_break, inline,
                         align, repeat_header=repeat_header)
         return self._place_table(tbl, align, size, face)
 
-    def _tc(self, text, r, c, rs, cs, width, height, border_fill, para_pr, size,
-            face, bold, header=False, valign="CENTER"):
-        """One hp:tc. A cell holding several lines is one paragraph per line: a
-        single paragraph cannot break where the author meant it to, since hp:t
-        has no line break — "\n" would print as nothing and the lines would
-        run together with no separator at all."""
+    def _tc(self, lines, r, c, rs, cs, width, height, border_fill, face,
+            header=False, valign="CENTER"):
+        """One hp:tc holding `lines`: (text, paraPr id, size, bold) per line.
+
+        A cell holding several lines is one paragraph per line: a single
+        paragraph cannot break where the author meant it to, since hp:t has
+        no line break — "\n" would print as nothing and the lines would run
+        together with no separator at all. One paragraph per line is also
+        what lets each line have its own indent and size."""
         cell = "".join(
-            self._p(para_pr, self._runs(ln, size, bold, "#000000", face), inner=True)
-            for ln in text.split("\n"))
+            self._p(pp, self._runs(t, sz, bd, "#000000", face), inner=True)
+            for t, pp, sz, bd in lines)
         return ('<hp:tc name="" header="{hd}" hasMargin="0" protect="0" editable="0" '
                 'dirty="0" borderFillIDRef="{bf}">'
                 '<hp:subList id="" textDirection="HORIZONTAL" lineWrap="BREAK" '
@@ -1691,6 +1812,11 @@ class HwpxBuilder:
         pn = re.search(r'<hp:pageNum\b[^>]*pos="(\w+)"', section)
         r["page_numbering"] = pn.group(1) if pn else "none"
         r["table_grid"] = HwpxBuilder._grid_report(section)
+        # Markup that reached the page as characters. Text the author escaped
+        # on purpose ("\<u>") counts too; it is a pointer, not a verdict.
+        body = "".join(re.findall(r"<hp:t>([^<]*)</hp:t>", section))
+        r["markup_left"] = {"tags": len(re.findall(r"&lt;/?(?:u|sup|sub)&gt;", body)),
+                            "double_asterisks": body.count("**")}
         pbs = re.findall(r'<hp:tbl\b[^>]*\bpageBreak="(\w+)"', section)
         r["table_page_break"] = {v: pbs.count(v) for v in sorted(set(pbs))}
         # A body written here carries no line cache; Hangul builds it on open.

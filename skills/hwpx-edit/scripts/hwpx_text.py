@@ -58,20 +58,23 @@ class Styles:
                 continue
             size = int(cp.get('height', '0')) / 100
             face = '?'
-            bold = False
-            script = ''
+            marks = {}
             for ch in cp:
-                if local(ch.tag) == 'fontRef':
+                tag = local(ch.tag)
+                if tag == 'fontRef':
                     face = faces.get(ch.get('hangul'), '?')
-                elif local(ch.tag) == 'bold':
-                    bold = True
-                elif local(ch.tag) == 'supscript':
-                    script = ' 위첨자'
-                elif local(ch.tag) == 'subscript':
-                    script = ' 아래첨자'
-                elif local(ch.tag) == 'underline' and ch.get('type', 'NONE') != 'NONE':
-                    script = ' 밑줄' + script
-            self.label[cp.get('id')] = '%.1fpt %s%s%s' % (size, face, ' 굵게' if bold else '', script)
+                elif tag == 'bold':
+                    marks['굵게'] = 0
+                elif tag == 'italic':
+                    marks['기울임'] = 1
+                elif tag == 'underline' and ch.get('type', 'NONE') != 'NONE':
+                    marks['밑줄'] = 2
+                elif tag == 'supscript':
+                    marks['위첨자'] = 3
+                elif tag == 'subscript':
+                    marks['아래첨자'] = 3
+            extra = ''.join(' ' + m for m, _ in sorted(marks.items(), key=lambda kv: kv[1]))
+            self.label[cp.get('id')] = '%.1fpt %s%s' % (size, face, extra)
 
     def of(self, runs):
         seen = []

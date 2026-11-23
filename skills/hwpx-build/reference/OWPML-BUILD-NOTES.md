@@ -203,3 +203,14 @@ Dropping the template's own `BinData/` and `Preview/` matters. Carrying its
 images over leaves files nothing references, and carrying its `Preview/` leaves
 a thumbnail and preview text describing a document that no longer exists —
 which is what a file manager and Hangul's own open dialog show.
+
+## `hc:intent` negative is 내어쓰기, not a pulled-out first line
+
+Measured on a cell whose lines were written `left = 5.6 mm, intent = -5.6 mm`
+(Word's reading: first line at 0, the rest at 5.6): Hangul drew the first line
+at about 5 mm and the rest at about 10 mm — the first line at the left margin,
+the others |intent| further in. Hangul-made files agree: of the hanging
+paragraphs on this machine the most common shapes are `left=0` with
+`intent=-3600`, `-2600`, `-2800`. So a hanging indent of H starting at L is
+written `left = L, intent = -H`, and `parapr()` converts from Word's
+convention (`left_mm` = where the second line starts) to that.
