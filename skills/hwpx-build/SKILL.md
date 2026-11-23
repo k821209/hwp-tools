@@ -117,6 +117,7 @@ the difference — which is how this was found, reported as a table-margin bug
 | `heading(level, text)` | a sized, bold paragraph (1→17 pt, 2→14, 3→13), kept on the page of the paragraph after it |
 | `bullet(text)` | a `·` paragraph with a hanging indent |
 | `table(rows, widths_mm=…, align=…, page_break=…, inline=…)` | `hp:tbl`, header row shaded and repeated on each page; columns sized to their content to keep the table short (`"equal"` splits evenly; a list of mm is used as given, wider than the body raises); splits between rows at a page boundary |
+| `copy_table(src, index=… / containing=…)` | a table taken whole from another Hangul .hwpx, with the shapes it points to carried into this header |
 | `grid_table(widths_mm, cells)` | a table with merged cells on a grid — a form; every position covered exactly once, checked before writing |
 | `page_number(pos=…, fmt=…, side_char=…, start=…)` | one `hp:pageNum` control: "- 1 -" at the foot of every page by default |
 | `page_break()` | the next block starts a new page (`pageBreak="1"` on its paragraph) |
@@ -340,6 +341,25 @@ anywhere else, `\n` included.
 `markdown_chapter.convert(..., builder=b)` appends a markdown body to a
 builder that already holds such a form, keeping its template and page set-up.
 
+**When the form already exists as a Hangul file, copy it instead of redrawing
+it.** `copy_table(src, index=2)` — or `containing="제안 사업명"` — takes a
+top-level table from another `.hwpx` whole, nested tables included. The work
+is in its references: the table's cells, runs and paragraphs point by number
+into the source's header (border fills, character shapes, paragraph shapes,
+styles, tab settings), and the character shapes point on into its font
+tables. Pasted as it is, the table would point at whatever this document holds
+under those numbers — other borders, other fonts — and every structural check
+would pass. So each referenced entry is copied into this header under a new
+id and the table's references renumbered: fonts are matched by name in each of
+the seven language tables, and a face this template lacks is copied in;
+paragraph shapes bring their tab settings; styles are matched by name.
+
+What is not carried: paragraph numbering inside the table (set to none),
+a style this template lacks by name (바탕글 instead), and pictures (raises).
+`builder.copy_notes` lists each change. The source's line cache is dropped; a
+table wider than this body raises. Fill the copied form afterwards with
+hwpx-edit's `fill_cell()`.
+
 ## Tables across pages
 
 A table that does not fit in what is left of the page either splits or jumps,
@@ -535,6 +555,11 @@ And a check document (2026-11-14), opened by a person in Hangul:
   holding two paragraphs (a `\n` in the cell string, `<br>` in markdown)
   shows them on two lines; with the bottom gap set from the next paragraph,
   a chapter band no longer covers the table above it
+- **a form table copied from another document** (2026-11-23) — two tables
+  of a government survey form (11 merged cells, a 44-font header) copied into
+  the shipped template: borders, shading, mixed faces and weights, blue
+  italic guidance, alignments, merges and underlines identical side by side
+  with the source; text identical character for character
 - **forms with merged cells** (2026-11-23) — two grid_table() forms: a
   3-column merge, 2-row label, a 6-row grey band, a 2×3 heading, a 3-row
   stage, a borderless gap row; underline and superscript in a title; empty
@@ -559,8 +584,10 @@ And a check document (2026-11-14), opened by a person in Hangul:
   the default "- N -" at the bottom centre has been looked at.
 - **A footnote longer than the space left on its page**, and several notes
   competing for one page foot. Only two short notes have been seen.
-- **Everything outside that document's shape.** Nested tables, equations and
-  multi-section documents have not been exercised.
+- **copy_table() on a table with nested tables, numbered paragraphs or a
+  style this template lacks.** Handled in code, not yet looked at in Hangul.
+- **Everything outside that document's shape.** Nested tables built here,
+  equations and multi-section documents have not been exercised.
 
 ## Example
 

@@ -264,7 +264,10 @@ class HwpxBuilder:
         self._base_borderfill = self._first_id("borderFill")
         self._fonts = self._font_table()
 
-        self._new = {"charPr": [], "paraPr": [], "borderFill": []}
+        self._new = {"charPr": [], "paraPr": [], "borderFill": [], "tabPr": []}
+        self._new_fonts: dict = {}    # fontface lang → <hh:font> blocks added
+        #: What copy_table() could not carry over exactly, one line each.
+        self.copy_notes: list = []
         self._cache: dict = {}
         self._fill_color: dict = {}   # borderFill id → faceColor, to merge fill+edges
         self._body: list[str] = []
@@ -1044,6 +1047,179 @@ class HwpxBuilder:
                         align, repeat_header=True)
         return self._place_table(tbl, align, size, face)
 
+    # ------------------------------------------------------------ copy_table
+
+    @staticmethod
+    def _top_tables(section):
+        """(start, end) of each top-level hp:tbl — a table in a cell is part of
+        its outer table, so a non-greedy regex would cut the outer one short."""
+        out, depth, i, start = [], 0, 0, 0
+        while True:
+            o, c = section.find("<hp:tbl ", i), section.find("</hp:tbl>", i)
+            if c < 0:
+                return out
+            if 0 <= o < c:
+                if depth == 0:
+                    start = o
+                depth, i = depth + 1, o + 8
+            else:
+                depth, i = depth - 1, c + 9
+                if depth == 0:
+                    out.append((start, i))
+
+    def _fontfaces(self):
+        """lang → {face: id} for the target header, fonts added by copies included."""
+        out = {}
+        for lang, body in re.findall(r'<hh:fontface lang="(\w+)" fontCnt="\d+">(.*?)</hh:fontface>',
+                                     self.header, re.S):
+            out[lang] = {face: fid for fid, face in re.findall(r'<hh:font id="(\d+)" face="([^"]+)"', body)}
+            for blk in self._new_fonts.get(lang, []):
+                fid, face = re.search(r'<hh:font id="(\d+)" face="([^"]+)"', blk).groups()
+                out[lang][face] = fid
+        return out
+
+    def copy_table(self, src, index=0, containing=None, align="LEFT"):
+        """Copy a table from another Hangul .hwpx — a form, as its author drew it.
+
+        `index` counts the top-level tables of `src` from 0; `containing`
+        picks the first one whose text holds that string instead. The table's
+        XML is taken whole, and everything it points into its own header is
+        carried over under new ids: border fills, character shapes (fonts
+        matched by name per language, a face the target lacks copied in),
+        paragraph shapes (with their tab settings), styles matched by name.
+        Pasted with the source's ids, the table would point at whatever the
+        target happens to hold under those numbers — other borders, other
+        fonts — and every structural check would still pass.
+
+        Not carried: paragraph numbering inside the table (set to none, and
+        noted), styles the target lacks by name (바탕글 instead, noted), and
+        pictures (raises). The source's line cache is dropped. A table wider
+        than the target's body raises. `copy_notes` lists what was changed.
+        Fill the copied form afterwards with hwpx-edit's fill_cell().
+        """
+        with zipfile.ZipFile(src) as z:
+            sh = z.read(HEADER).decode("utf-8")
+            secs = [z.read(n).decode("utf-8") for n in sorted(
+                n for n in z.namelist() if re.fullmatch(r"Contents/section\d+\.xml", n))]
+        tables = [sec[a:b] for sec in secs for a, b in self._top_tables(sec)]
+        if containing is not None:
+            pick = [t for t in tables if containing in "".join(re.findall(r"<hp:t>([^<]*)", t))]
+            if not pick:
+                raise HwpxBuildError(f"no table in {Path(src).name} contains {containing!r}")
+            tbl = pick[0]
+        else:
+            if not 0 <= index < len(tables):
+                raise HwpxBuildError(f"{Path(src).name} has {len(tables)} tables; no index {index}")
+            tbl = tables[index]
+        if "binaryItemIDRef" in tbl:
+            raise HwpxBuildError("the table holds a picture; copying pictures is not supported")
+        tbl = re.sub(r"<hp:linesegarray>.*?</hp:linesegarray>", "", tbl, flags=re.S)
+        w = int(re.search(r'<hp:sz width="(\d+)"', tbl).group(1))
+        if w > self.text_width + 0.5 * MM:
+            raise HwpxBuildError(
+                "the table is %.1f mm wide and the body %.1f mm — widen the body with "
+                "page() first" % (w / MM, self.text_width / MM))
+
+        def block(kind, i):
+            # An entry is either self-closing (<hh:tabPr id="0" .../>) or has a
+            # closing tag; searching straight for "</hh:kind>" from a
+            # self-closing one runs on into the next entries.
+            m = re.search(r'<hh:%s\b[^>]*?\bid="%s"[^>]*?(/?)>' % (kind, i), sh)
+            if not m:
+                raise HwpxBuildError(f"{kind} {i} not in the source header")
+            if m.group(1):
+                return m.group(0)
+            end = sh.index(f"</hh:{kind}>", m.end()) + len(f"</hh:{kind}>")
+            return sh[m.start():end]
+
+        def renumber(blk, kind):
+            new = self._next_id(kind)
+            blk = re.sub(r'\bid="\d+"', f'id="{new}"', blk, count=1)
+            self._new[kind].append(blk)
+            return new
+
+        maps = {"borderFill": {}, "tabPr": {}, "charPr": {}, "paraPr": {}}
+
+        def note(msg):
+            if msg not in self.copy_notes:
+                self.copy_notes.append(msg)
+
+        def bf(i):
+            if i not in maps["borderFill"]:
+                maps["borderFill"][i] = renumber(block("borderFill", i), "borderFill")
+            return maps["borderFill"][i]
+
+        def tab(i):
+            if i not in maps["tabPr"]:
+                maps["tabPr"][i] = renumber(block("tabPr", i), "tabPr")
+            return maps["tabPr"][i]
+
+        src_fonts = {lang: dict(re.findall(r'<hh:font id="(\d+)" face="([^"]+)"', body))
+                     for lang, body in re.findall(
+                         r'<hh:fontface lang="(\w+)" fontCnt="\d+">(.*?)</hh:fontface>', sh, re.S)}
+        langs = {"hangul": "HANGUL", "latin": "LATIN", "hanja": "HANJA",
+                 "japanese": "JAPANESE", "other": "OTHER", "symbol": "SYMBOL", "user": "USER"}
+
+        def font(lang, i):
+            face = src_fonts[lang][i]
+            have = self._fontfaces().get(lang, {})
+            if face in have:
+                return have[face]
+            body = re.search(r'<hh:fontface lang="%s".*?</hh:fontface>' % lang, sh, re.S).group(0)
+            blk = re.search(r'<hh:font id="%s" .*?</hh:font>' % i, body, re.S).group(0)
+            new = str(max([int(x) for x in have.values()] + [-1]) + 1)
+            self._new_fonts.setdefault(lang, []).append(re.sub(r'id="\d+"', f'id="{new}"', blk, count=1))
+            if lang == "HANGUL":
+                self._fonts[face] = new
+            note(f"font {face!r} ({lang}) added to the header")
+            return new
+
+        def cp(i):
+            if i not in maps["charPr"]:
+                blk = block("charPr", i)
+                blk = re.sub(r'borderFillIDRef="(\d+)"', lambda m: f'borderFillIDRef="{bf(m.group(1))}"', blk)
+                blk = re.sub(r'<hh:fontRef ([^>]*)/>', lambda m: "<hh:fontRef %s/>" % " ".join(
+                    f'{k}="{font(langs[k], v)}"' for k, v in re.findall(r'(\w+)="(\d+)"', m.group(1))), blk)
+                maps["charPr"][i] = renumber(blk, "charPr")
+            return maps["charPr"][i]
+
+        def pp(i):
+            if i not in maps["paraPr"]:
+                blk = block("paraPr", i)
+                blk = re.sub(r'tabPrIDRef="(\d+)"', lambda m: f'tabPrIDRef="{tab(m.group(1))}"', blk)
+                blk = re.sub(r'borderFillIDRef="(\d+)"', lambda m: f'borderFillIDRef="{bf(m.group(1))}"', blk)
+                if re.search(r'<hh:heading type="(?!NONE)', blk):
+                    blk = re.sub(r'<hh:heading type="\w+" idRef="\d+"', '<hh:heading type="NONE" idRef="0"', blk)
+                    note(f"paragraph numbering in paraPr {i} not carried; set to none")
+                maps["paraPr"][i] = renumber(blk, "paraPr")
+            return maps["paraPr"][i]
+
+        src_styles = dict(re.findall(r'<hh:style id="(\d+)" type="PARA" name="([^"]*)"', sh))
+        dst_styles = {name: sid for sid, name in
+                      re.findall(r'<hh:style id="(\d+)" type="PARA" name="([^"]*)"', self.header)}
+
+        def style(i):
+            name = src_styles.get(i)
+            if name in dst_styles:
+                return dst_styles[name]
+            note(f"style {name!r} not in the target; 바탕글 used")
+            return "0"
+
+        tbl = re.sub(r'borderFillIDRef="(\d+)"', lambda m: f'borderFillIDRef="{bf(m.group(1))}"', tbl)
+        tbl = re.sub(r'charPrIDRef="(\d+)"', lambda m: f'charPrIDRef="{cp(m.group(1))}"', tbl)
+        tbl = re.sub(r'paraPrIDRef="(\d+)"', lambda m: f'paraPrIDRef="{pp(m.group(1))}"', tbl)
+        tbl = re.sub(r'styleIDRef="(\d+)"', lambda m: f'styleIDRef="{style(m.group(1))}"', tbl)
+
+        def fresh(m):                          # new object ids for every table in it
+            self._instid += 1
+            return re.sub(r'\b(id|instid|instId)="\d+"', lambda a: f'{a.group(1)}="{self._instid}"', m.group(0))
+        tbl = re.sub(r"<hp:tbl\b[^>]*>", fresh, tbl)
+        # Anchored, it takes its bottom gap from the next paragraph, as ours do.
+        head_end = tbl.index("<hp:tr>")
+        if re.search(r'treatAsChar="0"', tbl[:head_end]):
+            tbl = re.sub(r'(<hp:outMargin [^>]*bottom=")\d+', r"\g<1>@@GAP@@", tbl[:head_end], count=1) + tbl[head_end:]
+        return self._place_table(tbl, align, 10.5, None)
+
     def _widths_from_mm(self, widths_mm, ncol):
         """HWPUNIT widths from a list of mm: as given, never wider than the body."""
         if len(widths_mm) != ncol:
@@ -1260,9 +1436,15 @@ class HwpxBuilder:
 
     def _header_xml(self) -> str:
         h = self.header
+        for lang, blocks in self._new_fonts.items():
+            m = re.search(r'<hh:fontface lang="%s" fontCnt="(\d+)">(.*?)</hh:fontface>' % lang,
+                          h, re.S)
+            h = h.replace(m.group(0), '<hh:fontface lang="%s" fontCnt="%d">%s%s</hh:fontface>'
+                          % (lang, int(m.group(1)) + len(blocks), m.group(2), "".join(blocks)), 1)
         for kind, plural in (("charPr", "charProperties"),
                              ("paraPr", "paraProperties"),
-                             ("borderFill", "borderFills")):
+                             ("borderFill", "borderFills"),
+                             ("tabPr", "tabProperties")):
             blocks = self._new[kind]
             if not blocks:
                 continue
