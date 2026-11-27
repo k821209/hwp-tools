@@ -22,6 +22,7 @@ Python 3.8+, standard library only.
 
 from __future__ import annotations
 
+import html
 import re
 import shutil
 import sys
@@ -88,6 +89,19 @@ def _top_spans(s: str, open_tok: str, close_tok: str):
 
 class HwpxError(RuntimeError):
     pass
+
+
+def _plain(xml: str) -> str:
+    """The text of an XML fragment as a reader sees it: memo bodies (the
+    fieldBegin subtrees) left out, one line per paragraph, entities decoded."""
+    xml = re.sub(r"<hp:fieldBegin\b.*?</hp:fieldBegin>", "", xml, flags=re.S)
+    lines = []
+    for part in re.split(r"</hp:p>", xml):
+        t = "".join(re.findall(r"<hp:t(?:\s[^>]*)?>(.*?)</hp:t>", part, re.S))
+        t = re.sub(r"<[^>]+>", "", t)
+        if t or lines:
+            lines.append(html.unescape(t))
+    return "\n".join(lines).strip("\n")
 
 
 def _esc(s: str) -> str:
@@ -218,9 +232,24 @@ class Hwpx:
         return self._span("<hp:p ", "</hp:p>", pos)
 
     def _find(self, needle, occurrence=0):
-        pos = -1
-        for _ in range(occurrence + 1):
-            pos = self.section.index(needle, pos + 1)
+        """Position of the `occurrence`-th `needle` in the section's text.
+
+        The section holds text escaped, so "R&D" is "R&amp;D" there; the
+        needle is looked for in that form, as the reader typed it."""
+        xn, pos = _esc(needle), -1
+        # Memo bodies are not the document: a reviewer's note quoting the very
+        # phrase it marks would otherwise be found first, and the edit land in
+        # the note.
+        memos = [(m.start(), m.end()) for m in
+                 re.finditer(r"<hp:fieldBegin\b.*?</hp:fieldBegin>", self.section, re.S)]
+        k = 0
+        while k <= occurrence:
+            pos = self.section.find(xn, pos + 1)
+            if pos < 0:
+                raise HwpxError(f"{needle!r} not found" + (f" (occurrence {occurrence})" if k else "")
+                                + " — it may straddle two runs; see runs_in()")
+            if not any(a <= pos < b for a, b in memos):
+                k += 1
         return pos
 
     def runs_in(self, needle, occurrence=0):
@@ -231,9 +260,14 @@ class Hwpx:
         string.
         """
         a, b = self._para_span(self._find(needle, occurrence))
-        return re.findall(
-            r'<hp:run charPrIDRef="(\d+)"><hp:t>(.*?)</hp:t></hp:run>', self.section[a:b], re.S
-        )
+        # A memo sits inside a run, with runs of its own in its body: take the
+        # memo bodies out first, then each run's text. Text as the reader sees
+        # it ("R&D", not "R&amp;D"), which is also what split_run() takes.
+        para = re.sub(r"<hp:fieldBegin\b.*?</hp:fieldBegin>", "", self.section[a:b], flags=re.S)
+        return [(cp, html.unescape(re.sub(r"<[^>]+>", "", "".join(
+                    re.findall(r"<hp:t(?:\s[^>]*)?>(.*?)</hp:t>", body or "", re.S)))))
+                for cp, body in re.findall(
+                    r'<hp:run charPrIDRef="(\d+)"(?:\s[^>]*)?(?:/>|>(.*?)</hp:run>)', para, re.S)]
 
     # ------------------------------------------------------------------ edits
 
@@ -244,7 +278,9 @@ class Hwpx:
         """
         a, b = self._para_span(self._find(needle, occurrence))
         blk = self.section[a:b]
-        cps = re.findall(r'<hp:run charPrIDRef="(\d+)">', blk)
+        # The paragraph's own runs only: a memo's body has runs of its own.
+        cps = re.findall(r'<hp:run charPrIDRef="(\d+)">',
+                         re.sub(r"<hp:fieldBegin\b.*?</hp:fieldBegin>", "", blk, flags=re.S))
         if not cps:
             raise HwpxError(f"no run in the paragraph holding {needle!r}")
         cp = self.clone_charpr(cps[-1], color) if color else cps[-1]
@@ -275,15 +311,15 @@ class Hwpx:
         For changing a single value in a sentence — the figure becomes its own
         run and only it carries the mark.
         """
-        old = _RUN.format(cp=char_pr, t=before + middle + after)
+        old = _RUN.format(cp=char_pr, t=_esc(before + middle + after))
         if self.section.count(old) != 1:
             raise HwpxError(f"run is not unique ({self.section.count(old)} matches)")
         cp = self.clone_charpr(char_pr, color) if color else str(char_pr)
         self.section = self.section.replace(
             old,
-            _RUN.format(cp=char_pr, t=before)
-            + _RUN.format(cp=cp, t=middle)
-            + _RUN.format(cp=char_pr, t=after),
+            _RUN.format(cp=char_pr, t=_esc(before))
+            + _RUN.format(cp=cp, t=_esc(middle))
+            + _RUN.format(cp=char_pr, t=_esc(after)),
         )
         return self
 
@@ -519,15 +555,65 @@ class Hwpx:
             '</hp:subList></hp:fieldBegin></hp:ctrl>'
         )
         end = f'<hp:ctrl><hp:fieldEnd beginIDRef="{fid}" fieldid="{fieldid}"/></hp:ctrl>'
-        m = re.search(r"<hp:t>([^<]*?)%s([^<]*?)</hp:t>" % re.escape(anchor), self.section)
+        # The section holds the text escaped ("&lt;", "&amp;"), so the anchor is
+        # looked for, and written back, in that form — unescaped, an anchor
+        # with "&" or "<" was not found, or was written as broken XML.
+        xa = _esc(anchor)
+        m = re.search(r"<hp:t>([^<]*?)%s([^<]*?)</hp:t>" % re.escape(xa), self.section)
         if not m:
             raise HwpxError(f"{anchor!r} is not inside a single <hp:t> — see runs_in()")
         pre = f"<hp:t>{m.group(1)}</hp:t>" if m.group(1) else ""
         post = f"<hp:t>{m.group(2)}</hp:t>" if m.group(2) else ""
         self.section = (self.section[:m.start()]
-                        + pre + memo + f"<hp:t>{anchor}</hp:t>" + end + post
+                        + pre + memo + f"<hp:t>{xa}</hp:t>" + end + post
                         + self.section[m.end():])
         return self
+
+    def memos(self):
+        """Every margin memo, in document order — the reading side of add_memo().
+
+        Each is a dict: number, author, created, body (paragraphs joined with
+        "\n"), anchor (the text the memo marks), para (the paragraph it sits
+        in), id, and problem. Hangul's own markup, as a reviewer leaves it:
+
+        - the span is `fieldBegin … fieldEnd beginIDRef="<id>"`, paired by id
+          — every memo in one file can carry the same `fieldid`, and Hangul
+          writes no `id` on fieldEnd;
+        - memos nest: one memo's span can hold another memo whole, so the
+          anchor leaves out the inner memo's body but keeps the text it marks.
+
+        A memo whose span cannot be found gets anchor None and says why in
+        `problem`, never an empty string — an empty anchor would read as "a
+        memo on nothing" when the reading itself failed.
+        """
+        s, out = self.section, []
+        for m in re.finditer(r'<hp:fieldBegin\b[^>]*\btype="MEMO"[^>]*>', s):
+            fid = re.search(r'\bid="([^"]*)"', m.group(0)).group(1)
+            close = s.index("</hp:fieldBegin>", m.end()) + len("</hp:fieldBegin>")
+            head = s[m.end():close]
+            param = lambda n: (re.search(r'<hp:\w+Param name="%s">([^<]*)</hp:\w+Param>' % n, head)
+                               or [None, None])[1]
+            sub = re.search(r"<hp:subList\b.*</hp:subList>", head, re.S)
+            body = _plain(sub.group(0)) if sub else ""
+            num = param("Number")
+            item = {"number": int(num) if num and num.isdigit() else num,
+                    "author": html.unescape(param("Author") or ""),
+                    "created": param("CreateDateTime"), "body": body,
+                    "anchor": None, "para": None, "id": fid, "problem": None}
+            ends = [e for e in re.finditer(
+                r'<hp:fieldEnd\b[^>]*\bbeginIDRef="%s"[^>]*/>' % re.escape(fid), s)]
+            if not ends:
+                item["problem"] = f"no fieldEnd with beginIDRef={fid}"
+            elif len(ends) > 1:
+                item["problem"] = f"{len(ends)} fieldEnds with beginIDRef={fid}"
+            elif ends[0].start() < m.start():
+                item["problem"] = "fieldEnd comes before its fieldBegin"
+            else:
+                item["anchor"] = _plain(s[close:ends[0].start()])
+            a, b = self._para_span(m.start())
+            item["para"] = _plain(s[a:b])
+            out.append(item)
+        return out
 
     def _next_memo_number(self):
         ns = [int(x) for x in re.findall(r'<hp:stringParam name="ID">memo(\d+)</hp:stringParam>',
@@ -552,7 +638,7 @@ class Hwpx:
                    for m in re.finditer(f'charPrIDRef="{cid}"', self.section)]
         targets += [m.start() for m in re.finditer('type="MEMO"', self.section)]
         for needle in extra_needles:
-            targets += [m.start() for m in re.finditer(re.escape(needle), self.section)]
+            targets += [m.start() for m in re.finditer(re.escape(_esc(needle)), self.section)]
         spans = sorted({self._para_span(p) for p in targets})
         n = 0
         for a, b in reversed(spans):
@@ -633,10 +719,12 @@ class Hwpx:
         ids = [re.match(r'<hh:charPr\b[^>]*?id="(\d+)"', b).group(1) for b in blocks]
         r["charpr_count_match"] = (cnt == len(blocks))
         r["charpr_dup_ids"] = len(ids) - len(set(ids))
-        begins = re.findall(r'<hp:fieldBegin id="(\d+)" type="MEMO"', section)
+        begins = [re.search(r'\bid="(\d+)"', t).group(1) for t in
+                  re.findall(r'<hp:fieldBegin\b[^>]*\btype="MEMO"[^>]*>', section)]
         r["memos"] = {"count": len(begins),
-                      "all_paired": all(f'<hp:fieldEnd beginIDRef="{b}"' in section
-                                        for b in begins)}
+                      # paired by beginIDRef wherever it sits among the attributes
+                      "all_paired": all(re.search(r'<hp:fieldEnd\b[^>]*\bbeginIDRef="%s"' % b,
+                                                  section) for b in begins)}
         if expect_memos is not None:
             r["memos"]["expected"] = expect_memos
             r["memos"]["ok"] = (len(begins) == expect_memos)
@@ -673,8 +761,12 @@ class Hwpx:
 
 
 if __name__ == "__main__":
-    import sys
-    if len(sys.argv) != 2:
-        sys.exit("usage: hwpx_edit.py <file.hwpx>   # print colour usage")
-    for color, use in Hwpx(sys.argv[1]).color_usage().items():
-        print(f"{color:10s} runs {use['runs']:5d}  chars {use['chars']:7d}")
+    import json
+    args = [a for a in sys.argv[1:] if not a.startswith("--")]
+    if len(args) != 1:
+        sys.exit("usage: hwpx_edit.py <file.hwpx> [--memos]   # colour usage, or the memos")
+    if "--memos" in sys.argv:
+        print(json.dumps(Hwpx(args[0]).memos(), ensure_ascii=False, indent=1))
+    else:
+        for color, use in Hwpx(args[0]).color_usage().items():
+            print(f"{color:10s} runs {use['runs']:5d}  chars {use['chars']:7d}")

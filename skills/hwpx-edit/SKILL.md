@@ -148,6 +148,36 @@ all inside one `hp:run`. With `MemoShapeIDRef=65535` (the default shape) no
 `hh:memoProperties` is needed, so header styles stay untouched. The memo body
 paragraph uses `paraPrIDRef=44 / styleIDRef=13 ("메모") / charPrIDRef=64`.
 
+### Reading them
+
+`memos()` is the other half: every memo in document order, as a dict —
+`number`, `author`, `created`, `body`, `anchor` (the text it marks), `para` (the
+paragraph it sits in), `id`, `problem`. `python3 hwpx_edit.py file.hwpx --memos`
+prints them as JSON. Both `anchor` and `para` are there because a short anchor
+("세 라벨") can occur in many places and a paragraph alone does not say which
+part is meant.
+
+Three things about Hangul's own memo markup that a hand-written reader gets
+wrong, each found on a reviewer's file:
+
+- **The span is paired by id.** `fieldEnd` carries `beginIDRef` and no `id` of
+  its own, and every memo in a file may share one `fieldid`. A pattern
+  expecting `<hp:fieldEnd id="…" beginIDRef=…` matches nothing — and because the
+  bodies still read fine, every span silently came back empty.
+- **Memos nest.** One memo's span can hold another memo whole; the outer
+  anchor leaves out the inner memo's body and keeps the text the inner marks.
+- **Text in a memo body is not the document.** A note quoting the phrase it
+  marks would be found first by a plain search; `_find()` — and so every edit
+  that takes a needle — skips memo bodies, and `runs_in()` and `append_run()`
+  look only at the paragraph's own runs.
+
+A memo whose span cannot be read gets `anchor: None` and the reason in
+`problem` (no fieldEnd, two, or one before its fieldBegin) — never an empty
+string, which would read as "a memo on nothing" when the reading failed.
+
+Needles are matched as the reader types them: `"R&D"` finds `R&amp;D` in the
+XML, and `add_memo`, `split_run` and the rest write text back escaped.
+
 ## Verifying
 
 `Hwpx.verify()` checks: zip integrity, both XML parse, `charProperties itemCnt`

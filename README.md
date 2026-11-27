@@ -23,7 +23,8 @@ rules in each skill are those failures, written down.
 
 Edit a `.hwpx` in place: insert paragraphs, append runs, add table rows, fill
 the empty cells of a form with text or a picture, insert pictures, mark
-revisions in an unused colour, attach margin memos.
+revisions in an unused colour, attach margin memos and read the ones a
+reviewer left (`memos()`).
 
 ```python
 from hwpx_edit import Hwpx
